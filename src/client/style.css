@@ -1224,3 +1224,10 @@ dialog p,
 .modal-hint.receive-error {
   color: #a2443a;
 }
+
+/* Numeric rooms should be easy to read aloud and type on another device. */
+#room-code {
+  font-size: 29px;
+  letter-spacing: 5px;
+  font-variant-numeric: tabular-nums;
+}

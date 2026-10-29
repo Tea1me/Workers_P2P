@@ -84,7 +84,8 @@
                 <div class="join-input">
                   <input
                     id="room-input"
-                    placeholder="粘贴房间码或邀请链接"
+                    placeholder="输入 6 位数字，或粘贴邀请链接"
+                    inputmode="numeric"
                     autocomplete="off"
                     spellcheck="false"
                     required
@@ -209,7 +210,7 @@
       </main>
       <footer>
         <span
-          ><span class="tiny-brand" data-icon="layers"></span>NearDrop
+          ><span class="tiny-brand" data-icon="layers"></span>NearDrop 1.2
           <span class="footer-divider">/</span> 为近距离分享而生</span
         ><span
           >Built on Cloudflare Workers <span class="footer-dot">·</span> Powered
@@ -249,7 +250,7 @@
           type="button"
           hidden
         >
-          无需选位置，直接下载接收
+          直接保存到磁盘（可选）
         </button>
       </form>
     </dialog>
@@ -268,7 +269,8 @@
           <li>
             <strong>创建房间，分享链接</strong>
             <p>
-              在另一台设备打开邀请链接，或粘贴房间码。房间链接是配对凭证，请只分享给信任的接收人。
+              在另一台设备打开邀请链接，或粘贴房间码。房间码是 6 位数字，1
+              小时内有效。仅分享给信任的接收人。
             </p>
           </li>
           <li>
@@ -279,7 +281,7 @@
           </li>
         </ol>
         <div class="help-note">
-          支持文件保存接口的浏览器可直接写入磁盘。手机接收 128 MiB
+          支持文件保存接口的浏览器可直接写入磁盘。普通接收支持 128 MiB
           以内的文件默认使用下载模式；其他内存接收同样限 128
           MiB。续传仅在双方页面未刷新且原文件仍可用时有效。本站不提供离线配对或公网中继。
         </div>

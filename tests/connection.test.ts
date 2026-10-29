@@ -22,6 +22,11 @@ class FakePeer {
   localDescription?: { type: string; sdp: string };
   remoteDescription?: { type: string; sdp: string };
   connectionState = "new";
+  onconnectionstatechange?: () => void;
+  restarts = 0;
+  restartIce() {
+    this.restarts++;
+  }
   channel?: FakeChannel;
   added: unknown[] = [];
   constructor(readonly config: unknown) {
@@ -56,7 +61,8 @@ class FakeSocket {
   static OPEN = 1;
   static instances: FakeSocket[] = [];
   readyState = 1;
-  sent: { type: string; data: Record<string, unknown> }[] = [];
+  sent: { type: string; session?: string; data?: Record<string, unknown> }[] =
+    [];
   onopen?: () => void;
   onmessage?: (event: { data: string }) => void;
   onclose?: (event: { code: number }) => void;
@@ -114,7 +120,7 @@ function harness() {
     route() {},
   });
   active.push(connection);
-  connection.join("a".repeat(24), "test");
+  connection.join("123456", "test");
   const ws = FakeSocket.instances.at(-1)!;
   ws.onopen?.();
   const id = ws.url.searchParams.get("id");
@@ -124,75 +130,86 @@ function harness() {
     get lost() {
       return lost;
     },
-    pair(fresh?: boolean, initiator = true) {
+    pair(
+      negotiate = true,
+      initiator = true,
+      session = "11111111-1111-4111-8111-111111111111",
+    ) {
       ws.emit({
         type: "paired",
-        fresh,
+        negotiate,
+        session,
         initiator: initiator ? id : "other",
         peer: { id: "other", name: "Phone" },
       });
     },
-    signal(data: unknown) {
-      ws.emit({ type: "signal", data });
+    signal(data: unknown, session = "11111111-1111-4111-8111-111111111111") {
+      ws.emit({ type: "signal", session, data });
     },
   };
 }
-test("fresh pair sends offer without waiting for remote state; later state cannot reset negotiation", async () => {
+test("pair negotiates immediately without a state exchange and includes a STUN route", async () => {
   const h = harness();
-  h.pair(true);
+  h.pair();
   await settle();
-  assert.ok(
-    h.ws.sent.some(
-      (m) => m.data.kind === "description" && m.data.type === "offer",
-    ),
-  );
-  const original = FakePeer.instances[0];
-  h.signal({ kind: "state", open: false });
-  await settle();
-  assert.equal(FakePeer.instances.length, 1);
-  assert.equal(original.connectionState, "new");
+  assert.ok(h.ws.sent.some((m) => m.data?.type === "offer"));
+  assert.deepEqual(FakePeer.instances[0].config, {
+    iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
+    iceCandidatePoolSize: 0,
+  });
 });
-test("fresh answering side buffers early ICE and answers without a state round trip", async () => {
+test("answering side buffers early ICE until SDP is installed", async () => {
   const h = harness();
   h.pair(true, false);
   await settle();
-  assert.equal(FakePeer.instances.length, 1);
   h.signal({ kind: "candidate", candidate: { candidate: "candidate:1" } });
   h.signal({ kind: "description", type: "offer", sdp: "v=0 offer" });
   await settle();
   assert.equal(FakePeer.instances[0].added.length, 1);
-  assert.ok(h.ws.sent.some((m) => m.data.type === "answer"));
+  assert.ok(h.ws.sent.some((m) => m.data?.type === "answer"));
 });
-test("old server without fresh hint retains the compatible state handshake", async () => {
+test("stale candidates and offers cannot corrupt a replacement session", async () => {
   const h = harness();
   h.pair();
   await settle();
-  assert.equal(FakePeer.instances.length, 0);
-  h.signal({ kind: "state", open: false });
+  const session = "22222222-2222-4222-8222-222222222222";
+  h.pair(true, true, session);
   await settle();
-  assert.equal(FakePeer.instances.length, 1);
-  assert.ok(h.ws.sent.some((m) => m.data.type === "offer"));
+  h.signal({ kind: "description", type: "offer", sdp: "STALE" });
+  h.signal({ kind: "candidate", candidate: { candidate: "STALE" } });
+  await settle();
+  const current = FakePeer.instances.at(-1)!;
+  assert.equal(current.remoteDescription, undefined);
+  assert.equal(current.added.length, 0);
+  h.signal({ kind: "description", type: "answer", sdp: "CURRENT" }, session);
+  await settle();
+  assert.equal(
+    (current.remoteDescription as { sdp: string } | undefined)?.sdp,
+    "CURRENT",
+  );
 });
-test("healthy direct channel survives a signaling re-pair when both devices are open", async () => {
+test("healthy direct channel survives signaling reconnect when server confirms both are ready", async () => {
   const h = harness();
-  h.pair(true);
+  h.pair();
   await settle();
   FakePeer.instances[0].channel!.open();
-  h.pair(false);
-  h.signal({ kind: "state", open: true });
+  h.pair(false, true, "22222222-2222-4222-8222-222222222222");
   await settle();
   assert.equal(h.connection.open, true);
   assert.equal(FakePeer.instances.length, 1);
   assert.equal(h.lost, 0);
 });
-test("retained channel rebuilds if the other device lost its channel", async () => {
+test("failed ICE gets one automatic restart and no retry loop", async () => {
   const h = harness();
-  h.pair(true);
+  h.pair();
   await settle();
-  FakePeer.instances[0].channel!.open();
-  h.pair(false);
-  h.signal({ kind: "state", open: false });
+  const pc = FakePeer.instances[0];
+  pc.connectionState = "failed";
+  pc.onconnectionstatechange?.();
   await settle();
-  assert.equal(FakePeer.instances.length, 2);
-  assert.equal(h.lost, 1);
+  assert.equal(pc.restarts, 1);
+  pc.onconnectionstatechange?.();
+  await settle();
+  assert.equal(pc.restarts, 1);
+  assert.equal(pc.connectionState, "closed");
 });

@@ -6,15 +6,10 @@ import {
   type Progress,
   type Sink,
 } from "./transfer";
-import {
-  newRoom,
-  normalizeRoom,
-  ROOM_PATTERN,
-  displayRoom,
-} from "../shared/protocol";
+import { normalizeRoom, ROOM_PATTERN, displayRoom } from "../shared/protocol";
 import { bytes, deviceName, safeName } from "./format";
 import { hydrateIcons, icon } from "./icons";
-import { ReceiveController, isMobileDevice, type SavePicker } from "./receive";
+import { ReceiveController, type SavePicker } from "./receive";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) =>
   document.getElementById(id) as T;
@@ -116,25 +111,21 @@ const engine = new TransferEngine(connection, {
       const accept = $<HTMLButtonElement>("accept-file");
       const fallback = $<HTMLButtonElement>("download-fallback");
       let decision: { sink?: Sink } | null = null;
-      const controller = new ReceiveController(
-        meta,
-        isMobileDevice(navigator),
-        savePicker,
-        {
-          render: (view) => {
-            accept.disabled = view.disabled;
-            accept.innerHTML = icon("download");
-            accept.append(document.createTextNode(view.label));
-            fallback.hidden = !view.fallback;
-            $("save-hint").textContent = view.hint;
-            $("save-hint").classList.toggle("receive-error", view.error);
-          },
-          accept: (result) => {
-            decision = result;
-            receiveDialog.close("accept");
-          },
+      const controller = new ReceiveController(meta, savePicker, {
+        render: (view) => {
+          accept.disabled = view.disabled;
+          accept.innerHTML = icon("download");
+          accept.append(document.createTextNode(view.label));
+          fallback.hidden = !view.fallback;
+          fallback.textContent = view.alternateLabel;
+          $("save-hint").textContent = view.hint;
+          $("save-hint").classList.toggle("receive-error", view.error);
         },
-      );
+        accept: (result) => {
+          decision = result;
+          receiveDialog.close("accept");
+        },
+      });
       receiveDialog.addEventListener(
         "close",
         () => {
@@ -148,7 +139,9 @@ const engine = new TransferEngine(connection, {
       accept.onclick = () => {
         void controller.accept();
       };
-      fallback.onclick = () => controller.download();
+      fallback.onclick = () => {
+        void controller.alternate();
+      };
       receiveDialog.showModal();
     }),
   progress: (progress) => {
@@ -401,7 +394,7 @@ function join(value: string): void {
     }
     candidate = normalizeRoom(candidate);
     if (!ROOM_PATTERN.test(candidate)) {
-      toast("请输入完整的 24 位房间码，或粘贴邀请链接");
+      toast("请输入 6 位数字房间码，或粘贴邀请链接");
       return;
     }
     room = candidate;
@@ -414,7 +407,30 @@ function join(value: string): void {
     toast((error as Error).message);
   }
 }
-$("create-room").onclick = () => join(newRoom());
+$("create-room").onclick = async () => {
+  if (!supported()) return;
+  if (engine.busy) {
+    toast("请先完成或取消当前传输");
+    return;
+  }
+  const button = $<HTMLButtonElement>("create-room");
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/rooms", { method: "POST" });
+    if (!response.ok)
+      throw new Error(
+        response.status === 429
+          ? "操作过于频繁，请一分钟后重试"
+          : "创建房间失败，请检查网络后重试",
+      );
+    const result = (await response.json()) as { room: string };
+    join(result.room);
+  } catch (error) {
+    toast((error as Error).message);
+  } finally {
+    button.disabled = false;
+  }
+};
 $("join-form").onsubmit = (event) => {
   event.preventDefault();
   join($<HTMLInputElement>("room-input").value);

@@ -32,7 +32,8 @@ export class Connection {
   private id = "";
 
   private initiator = false;
-  private fastPair = false;
+  private session = "";
+  private restartAttempts = 0;
   private room = "";
   private name = "";
   constructor(private events: ConnectionEvents) {}
@@ -59,7 +60,7 @@ export class Connection {
     url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
     url.searchParams.set("id", this.id);
     url.searchParams.set("name", this.name);
-    url.searchParams.set("resume", this.pc ? "1" : "0");
+    url.searchParams.set("ready", this.open ? "1" : "0");
     const ws = (this.ws = new WebSocket(url));
     const isCurrent = () => generation === this.generation && !this.stopped;
     ws.onopen = () => {
@@ -93,26 +94,38 @@ export class Connection {
             if (!this.open) this.events.state("waiting");
           } else if (m.type === "paired") {
             this.events.peer(String(m.peer.name));
+            if (this.session === m.session) return;
             this.initiator = m.initiator === this.id;
-            this.fastPair = m.fresh === true && !this.open;
-            // Still send state for older clients, but do not wait a cloud round trip on first pair.
-            this.signal({ kind: "state", open: this.open });
-            if (this.fastPair) await this.createPeer(this.initiator);
+            this.session = m.session;
+            if (m.negotiate === false && this.open) {
+              this.status(true);
+              return;
+            }
+            await this.createPeer(this.initiator);
+          } else if (m.type === "error") {
+            clearInterval(this.heartbeat);
+            this.stopped = true;
+            if (!this.open) this.failPeer(String(m.message));
+            ws.close();
           } else if (m.type === "peer-left") {
             if (!this.open) {
               this.closePeer();
               this.events.state("waiting", "对方已离开，等待重新加入");
             }
-          } else if (m.type === "signal") await this.handleSignal(m.data);
+          } else if (m.type === "signal" && m.session === this.session)
+            await this.handleSignal(m.data);
         })
-        .catch(() => {
-          if (isCurrent()) this.failPeer("建立连接失败，请重新连接房间");
+        .catch((error: Error) => {
+          if (isCurrent())
+            this.failPeer(
+              `连接协商失败：${error.message || error.name}。请两端刷新后重新连接`,
+            );
         });
     };
     ws.onclose = (event) => {
       if (!isCurrent()) return;
       clearInterval(this.heartbeat);
-      if ([4001, 4002, 1008, 1009].includes(event.code)) {
+      if ([4001, 4002, 4004, 1008, 1009].includes(event.code)) {
         this.stopped = true;
         if (!this.open)
           this.events.state(
@@ -142,14 +155,23 @@ export class Connection {
   private signal(data: unknown): void {
     if (this.ws?.readyState !== WebSocket.OPEN)
       throw new Error("配对服务暂不可用");
-    this.ws.send(JSON.stringify({ type: "signal", data }));
+    this.ws.send(
+      JSON.stringify({ type: "signal", session: this.session, data }),
+    );
+  }
+  private status(open: boolean): void {
+    if (this.session && this.ws?.readyState === WebSocket.OPEN)
+      this.ws.send(
+        JSON.stringify({ type: "status", session: this.session, open }),
+      );
   }
   private async createPeer(initiator: boolean): Promise<void> {
     this.closePeer();
     this.events.state("connecting");
+    this.restartAttempts = 0;
     const pc = (this.pc = new RTCPeerConnection({
-      iceServers: [],
-      iceCandidatePoolSize: 1,
+      iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
+      iceCandidatePoolSize: 0,
     }));
     this.candidates = [];
     pc.onicecandidate = (event) => {
@@ -157,7 +179,12 @@ export class Connection {
         try {
           this.signal({
             kind: "candidate",
-            candidate: event.candidate.toJSON(),
+            candidate: {
+              candidate: event.candidate.candidate,
+              sdpMid: event.candidate.sdpMid,
+              sdpMLineIndex: event.candidate.sdpMLineIndex,
+              usernameFragment: event.candidate.usernameFragment,
+            },
           });
         } catch {
           /* reconnect will renegotiate */
@@ -170,10 +197,30 @@ export class Connection {
         clearTimeout(this.disconnectTimer);
         if (this.open) this.events.state("connected");
       }
-      if (pc.connectionState === "failed")
-        this.failPeer(
-          "直连失败，请检查双方是否在同一局域网，或关闭 AP 隔离 / VPN",
-        );
+      if (pc.connectionState === "failed") {
+        if (this.restartAttempts)
+          this.failPeer(
+            "无法直连，请确认手机使用 Wi-Fi、双方关闭 VPN，且路由器没有访客隔离",
+          );
+        else if (this.initiator)
+          void this.restart(pc).catch(() =>
+            this.failPeer("网络重试失败，请重新连接"),
+          );
+        else {
+          this.restartAttempts = 1;
+          this.events.state("reconnecting", "正在重新探测设备连接…");
+          try {
+            this.signal({ kind: "restart" });
+          } catch {
+            this.failPeer("配对服务不可用，请重新连接");
+          }
+          clearTimeout(this.connectTimer);
+          this.connectTimer = setTimeout(() => {
+            if (this.pc === pc && !this.open)
+              this.failPeer("重试后仍无法直连，请检查 Wi-Fi 隔离或 VPN");
+          }, 20000);
+        }
+      }
       if (pc.connectionState === "disconnected") {
         this.events.state("reconnecting", "设备连接中断，正在等待网络恢复…");
         clearTimeout(this.disconnectTimer);
@@ -189,7 +236,7 @@ export class Connection {
         this.failPeer(
           "直连超时。请确认同一 Wi-Fi 未启用访客隔离，并点击重新连接",
         );
-    }, 20000);
+    }, 30000);
     if (initiator) {
       this.bindChannel(pc.createDataChannel("files-v1", { ordered: true }), pc);
       await pc.setLocalDescription(await pc.createOffer());
@@ -202,18 +249,18 @@ export class Connection {
     }
   }
   private async handleSignal(data: Record<string, unknown>): Promise<void> {
-    if (data.kind === "state") {
-      if (this.fastPair) return;
-      if (!(data.open && this.open)) await this.createPeer(this.initiator);
-      return;
-    }
     const pc = this.pc;
     if (!pc) return;
+    if (data.kind === "restart") {
+      if (this.initiator) await this.restart(pc);
+      return;
+    }
     if (data.kind === "description") {
       await pc.setRemoteDescription({
         type: data.type as RTCSdpType,
         sdp: data.sdp as string,
       });
+      if (this.pc !== pc) return;
       for (const candidate of this.candidates.splice(0))
         await pc.addIceCandidate(candidate);
       if (data.type === "offer") {
@@ -231,6 +278,24 @@ export class Connection {
       else this.candidates.push(data.candidate as RTCIceCandidateInit);
     }
   }
+  private async restart(pc: RTCPeerConnection): Promise<void> {
+    if (this.pc !== pc || this.restartAttempts) return;
+    this.restartAttempts = 1;
+    this.events.state("reconnecting", "正在重新探测设备连接…");
+    pc.restartIce();
+    await pc.setLocalDescription(await pc.createOffer({ iceRestart: true }));
+    if (this.pc !== pc) return;
+    this.signal({
+      kind: "description",
+      type: "offer",
+      sdp: pc.localDescription!.sdp,
+    });
+    clearTimeout(this.connectTimer);
+    this.connectTimer = setTimeout(() => {
+      if (this.pc === pc && pc.connectionState !== "connected")
+        this.failPeer("重试后仍无法直连，请检查 Wi-Fi 隔离或 VPN");
+    }, 20000);
+  }
   private bindChannel(channel: RTCDataChannel, pc: RTCPeerConnection): void {
     this.channel = channel;
     channel.binaryType = "arraybuffer";
@@ -238,6 +303,7 @@ export class Connection {
     channel.onopen = () => {
       if (this.pc !== pc) return;
       clearTimeout(this.connectTimer);
+      this.status(true);
       this.events.state("connected");
       this.events.ready();
       void this.route(pc);
@@ -263,7 +329,7 @@ export class Connection {
         ) {
           const local = stats.get(s.localCandidateId);
           this.events.route(
-            local?.protocol === "udp" ? "局域网直连 · UDP" : "设备直连",
+            local?.protocol === "udp" ? "设备直连 · UDP" : "设备直连",
           );
         }
       });
@@ -319,6 +385,7 @@ export class Connection {
     clearTimeout(this.connectTimer);
     clearTimeout(this.disconnectTimer);
     const hadPeer = !!this.pc;
+    if (hadPeer) this.status(false);
     const pc = this.pc;
     this.pc = undefined;
     this.channel?.close();
@@ -341,6 +408,7 @@ export class Connection {
     this.ws = undefined;
     this.closePeer();
     this.signalChain = Promise.resolve();
+    this.session = "";
     this.events.state("offline");
   }
 }

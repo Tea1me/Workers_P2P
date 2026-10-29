@@ -2,27 +2,26 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   ReceiveController,
-  isMobileDevice,
   type ReceiveView,
   type SavePicker,
 } from "../src/client/receive";
 import { MEMORY_LIMIT, type Sink } from "../src/client/transfer";
 function harness({
-  mobile = false,
   picker,
   size = 20,
-}: { mobile?: boolean; picker?: SavePicker; size?: number } = {}) {
+}: { picker?: SavePicker; size?: number } = {}) {
   let view: ReceiveView;
   const accepted: { sink?: Sink }[] = [];
   const controller = new ReceiveController(
     { name: "sample.txt", size },
-    mobile,
     picker,
     {
-      render: (value) => {
+      render(value) {
         view = value;
       },
-      accept: (result) => accepted.push(result),
+      accept(result) {
+        accepted.push(result);
+      },
     },
   );
   return {
@@ -34,22 +33,21 @@ function harness({
   };
 }
 const sink: Sink = { async write() {}, async close() {}, async abort() {} };
-test("phone small files download even if a non-working native picker is exposed", async () => {
-  let invoked = 0;
+test("receive defaults to ordinary download on every device, even with a broken picker", async () => {
+  let calls = 0;
   const h = harness({
-    mobile: true,
     picker: async () => {
-      invoked++;
+      calls++;
       throw new Error("Unavailable");
     },
   });
-  assert.equal(h.view.label, "接收并下载");
+  assert.equal(h.view.label, "接收文件");
   assert.equal(h.view.disabled, false);
   await h.controller.accept();
-  assert.equal(invoked, 0);
+  assert.equal(calls, 0);
   assert.deepEqual(h.accepted, [{}]);
 });
-test("desktop native picker is called in the same click stack and creates a streaming sink", async () => {
+test("disk saving is optional and preserves same-click user activation", async () => {
   let called = false;
   const h = harness({
     picker: async () => {
@@ -61,35 +59,34 @@ test("desktop native picker is called in the same click stack and creates a stre
       };
     },
   });
-  const result = h.controller.accept();
+  assert.match(h.view.alternateLabel, /可选/);
+  const pending = h.controller.alternate();
   assert.equal(called, true);
-  assert.equal(h.view.disabled, true);
-  await result;
+  await pending;
   assert.equal(h.accepted[0].sink, sink);
 });
-test("picker error becomes an inline message and an enabled download action", async () => {
+test("picker error is inline and leaves the ordinary receive button enabled", async () => {
   const h = harness({
     picker: async () => {
-      throw new DOMException("Not supported", "SecurityError");
+      throw new DOMException("denied", "SecurityError");
     },
   });
-  await h.controller.accept();
+  await h.controller.alternate();
   assert.equal(h.view.error, true);
+  assert.equal(h.view.label, "接收文件");
   assert.equal(h.view.disabled, false);
-  assert.equal(h.view.label, "接收并下载");
-  assert.match(h.view.hint, /已切换/);
   await h.controller.accept();
   assert.deepEqual(h.accepted, [{}]);
 });
-test("download fallback stays usable when native picker never settles", async () => {
+test("pending optional picker cannot trap ordinary reception", async () => {
   const h = harness({ picker: () => new Promise(() => {}) });
-  void h.controller.accept();
+  void h.controller.alternate();
   assert.equal(h.view.disabled, true);
-  assert.equal(h.view.fallback, true);
-  h.controller.download();
+  assert.match(h.view.alternateLabel, /普通下载/);
+  await h.controller.alternate();
   assert.deepEqual(h.accepted, [{}]);
 });
-test("late writable is aborted after switching to download", async () => {
+test("late writable is aborted after falling back to ordinary receive", async () => {
   let release!: (value: Sink) => void;
   let aborted = false;
   const h = harness({
@@ -100,7 +97,7 @@ test("late writable is aborted after switching to download", async () => {
         }),
     }),
   });
-  const pending = h.controller.accept();
+  const pending = h.controller.alternate();
   await Promise.resolve();
   h.controller.download();
   release({
@@ -113,7 +110,7 @@ test("late writable is aborted after switching to download", async () => {
   assert.equal(aborted, true);
   assert.deepEqual(h.accepted, [{}]);
 });
-test("closing receive modal invalidates an outstanding picker result", async () => {
+test("closing modal invalidates an outstanding picker", async () => {
   let release!: (value: { createWritable(): Promise<Sink> }) => void;
   let created = false;
   const h = harness({
@@ -122,7 +119,7 @@ test("closing receive modal invalidates an outstanding picker result", async () 
         release = resolve;
       }),
   });
-  const pending = h.controller.accept();
+  const pending = h.controller.alternate();
   h.controller.close();
   release({
     async createWritable() {
@@ -134,21 +131,20 @@ test("closing receive modal invalidates an outstanding picker result", async () 
   assert.equal(created, false);
   assert.equal(h.accepted.length, 0);
 });
-test("cancelled picker can retry without silently accepting a file", async () => {
+test("cancelling optional native picker leaves download available", async () => {
   const h = harness({
     picker: async () => {
-      throw new DOMException("cancelled", "AbortError");
+      throw new DOMException("cancel", "AbortError");
     },
   });
-  await h.controller.accept();
+  await h.controller.alternate();
   assert.equal(h.view.disabled, false);
-  assert.equal(h.view.error, false);
-  assert.equal(h.view.fallback, true);
   assert.equal(h.accepted.length, 0);
+  h.controller.download();
+  assert.equal(h.accepted.length, 1);
 });
-test("large Android files retain streaming support; memory fallback remains capped", async () => {
+test("large file label is still receive, with supported disk streaming and a bounded fallback", async () => {
   const h = harness({
-    mobile: true,
     size: MEMORY_LIMIT + 1,
     picker: async () => ({
       async createWritable() {
@@ -156,17 +152,17 @@ test("large Android files retain streaming support; memory fallback remains capp
       },
     }),
   });
-  assert.equal(h.view.label, "选择位置并接收");
+  assert.equal(h.view.label, "接收文件");
   assert.equal(h.view.fallback, false);
   h.controller.download();
   assert.equal(h.accepted.length, 0);
   await h.controller.accept();
   assert.equal(h.accepted[0].sink, sink);
-  const limited = harness({ mobile: true, size: MEMORY_LIMIT + 1 });
-  assert.equal(limited.view.disabled, true);
-  assert.match(limited.view.hint, /128 MiB/);
+  const unsupported = harness({ size: MEMORY_LIMIT + 1 });
+  assert.equal(unsupported.view.disabled, true);
+  assert.match(unsupported.view.hint, /128 MiB/);
 });
-test("large-file write permission failures remain visible and retryable", async () => {
+test("large file permission failures remain visible and retryable", async () => {
   const h = harness({
     size: MEMORY_LIMIT + 1,
     picker: async () => ({
@@ -179,27 +175,4 @@ test("large-file write permission failures remain visible and retryable", async 
   assert.equal(h.view.disabled, false);
   assert.equal(h.view.error, true);
   assert.match(h.view.hint, /存储权限/);
-  assert.equal(h.accepted.length, 0);
-});
-test("mobile detection handles Android, iPad desktop UA, and UA client hints", () => {
-  assert.equal(
-    isMobileDevice({ userAgent: "Android Chrome", maxTouchPoints: 5 }),
-    true,
-  );
-  assert.equal(
-    isMobileDevice({ userAgent: "Macintosh Safari", maxTouchPoints: 5 }),
-    true,
-  );
-  assert.equal(
-    isMobileDevice({
-      userAgent: "Linux",
-      maxTouchPoints: 1,
-      userAgentData: { mobile: true },
-    }),
-    true,
-  );
-  assert.equal(
-    isMobileDevice({ userAgent: "Windows Chrome", maxTouchPoints: 5 }),
-    false,
-  );
 });

@@ -8,21 +8,10 @@ export interface ReceiveView {
   label: string;
   disabled: boolean;
   fallback: boolean;
+  alternateLabel: string;
   hint: string;
   error: boolean;
 }
-export function isMobileDevice(device: {
-  userAgent: string;
-  maxTouchPoints: number;
-  userAgentData?: { mobile?: boolean };
-}): boolean {
-  return (
-    device.userAgentData?.mobile === true ||
-    /Android|iPhone|iPad|iPod/i.test(device.userAgent) ||
-    (/Macintosh/.test(device.userAgent) && device.maxTouchPoints > 1)
-  );
-}
-
 /** Keep picker failures and pending native dialogs from trapping the receive flow. */
 export class ReceiveController {
   private mode: "disk" | "download";
@@ -33,16 +22,14 @@ export class ReceiveController {
   private error = false;
   constructor(
     private meta: Pick<Metadata, "name" | "size">,
-    mobile: boolean,
     private picker: SavePicker | undefined,
     private events: {
       render(view: ReceiveView): void;
       accept(result: { sink?: Sink }): void;
     },
   ) {
-    // Mobile browsers can expose the API even when the system picker fails.
-    // Keep working Android large-file support, but prefer the simpler download path for small files.
-    this.mode = picker && (!mobile || !this.canDownload) ? "disk" : "download";
+    // Device / desktop-mode UA detection is unreliable. All small files use download first.
+    this.mode = this.canDownload || !picker ? "download" : "disk";
     this.render();
   }
   private get canDownload(): boolean {
@@ -50,13 +37,11 @@ export class ReceiveController {
   }
   private render(): void {
     this.events.render({
-      label: this.busy
-        ? "正在打开保存位置…"
-        : this.mode === "disk"
-          ? "选择位置并接收"
-          : "接收并下载",
+      label: this.busy ? "正在打开保存窗口…" : "接收文件",
       disabled: this.busy || (this.mode === "download" && !this.canDownload),
-      fallback: this.mode === "disk" && this.canDownload,
+      fallback: !!this.picker && this.canDownload,
+      alternateLabel:
+        this.mode === "disk" ? "改用普通下载接收" : "直接保存到磁盘（可选）",
       hint:
         this.hint ||
         (this.mode === "disk"
@@ -76,6 +61,14 @@ export class ReceiveController {
   }
   download(): void {
     if (this.active && this.canDownload) this.finish({});
+  }
+  alternate(): Promise<void> {
+    if (this.mode === "disk") this.download();
+    else if (this.active && !this.busy && this.picker) {
+      this.mode = "disk";
+      return this.accept();
+    }
+    return Promise.resolve();
   }
   async accept(): Promise<void> {
     if (!this.active || this.busy) return;
@@ -116,7 +109,7 @@ export class ReceiveController {
         if (this.canDownload) {
           this.mode = "download";
           this.hint =
-            "浏览器未能打开保存位置，已切换为下载接收。点击「接收并下载」即可继续，完成后点击「保存文件」。";
+            "浏览器未能打开保存窗口。点击「接收文件」即可普通下载，完成后点击「保存文件」。";
         } else {
           this.hint =
             "浏览器未能创建保存文件。请重试并确认存储权限；大于 128 MiB 的文件也可换用支持文件保存接口的浏览器，或在电脑上接收。";

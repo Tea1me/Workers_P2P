@@ -1,16 +1,13 @@
-# Validation record
+# Validation record — NearDrop 1.2
 
-Checked on 2026-10-29 with Node.js 24, the committed npm lockfile, and Wrangler 4.155.0.
+Checked on 2026-10-29 with Node.js 24, the committed lockfile, and Wrangler 4.155.0.
 
-- Strict client and Worker TypeScript checks: passed.
-- Client signaling, receive-flow, protocol, and file transfer tests: 32 passed.
-- Miniflare / workerd integration tests: 6 passed. These exercise actual WebSocket upgrades and SQLite Durable Objects, rather than mocks of the Cloudflare runtime.
-- Vite production build and Wrangler deployment dry run: passed.
-- npm dependency audit: zero reported vulnerabilities at verification time.
-- Desktop browser: layout, help dialog, and the explicit HTTPS requirement verified. Preview screenshot is `preview.jpg`.
+- Strict client and Worker TypeScript checks.
+- 31 unit / state-machine tests: receive flow, transfer integrity / resume, session isolation, candidate buffering, and bounded ICE restart.
+- 9 workerd / Durable Object integration tests: numeric allocation, atomic collision handling, readable missing / full rooms, per-IP limits, stale-session filtering, and ready-state preservation.
+- One real libwebrtc integration test: production Connection and TransferEngine clients exchange actual ICE / SDP through the production Worker, establish DTLS / SCTP data channels, transfer a multi-block file with matching SHA-256, reconnect one side, and send a file in the reverse direction.
+- Vite production build and Wrangler deployment dry run.
 
-The preview origin is plain HTTP (`terminal.local`), so browser Web Crypto is unavailable there. No real two-device WebRTC transfer, cross-browser mobile test, physical LAN throughput benchmark, or deployment into the owner's Cloudflare account has been performed in this environment. Transfer tests use the real application state machine with an in-memory transport; they validate correctness and recovery behavior, not network throughput. Complete the post-deployment acceptance steps in the README on the target devices.
+The restricted local executor does not expose usable native ICE candidates, so the real libwebrtc test skips there with an explicit reason. In GitHub CI this test is mandatory: missing native ICE candidates cause a failure, not a skip. The real test disables external STUN only for loopback determinism; the production client uses Cloudflare's public STUN endpoint. It tests actual network transport and production signaling, but is not a physical phone / desktop browser compatibility test, a public STUN reachability test, or a LAN throughput benchmark.
 
-## Mobile receive and connection update
-
-Regression coverage includes phone download selection despite a present but broken picker, same-click native picker invocation, visible picker-error fallback, a picker that never resolves, cancellation with a late writable result, Android large-file streaming, native permission failures, initial negotiation without a remote-state wait, early ICE buffering, older-server fallback, and preservation of healthy channels when signaling reconnects. The actual phone browser reported by the owner has not been available for physical-device reproduction. No fixed latency improvement or LAN throughput figure is claimed.
+The older screenshot shows the main visual design. Current room codes are six digits and the main receive button is always “接收文件”. New UI / protocol is identified by NearDrop 1.2 in the footer. Physical-device acceptance remains necessary for the owner's network and browser combination.

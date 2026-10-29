@@ -9,24 +9,27 @@ import {
 } from "../src/shared/protocol";
 import { safeName, bytes } from "../src/client/format";
 import { validMetadata } from "../src/client/transfer";
-test("room keys carry 96 random bits and round trip through display", () => {
-  const rooms = new Set(Array.from({ length: 1000 }, newRoom));
-  assert.equal(rooms.size, 1000);
-  for (const room of rooms) {
-    assert.match(room, ROOM_PATTERN);
-    assert.equal(normalizeRoom(displayRoom(room).toUpperCase()), room);
+test("room codes are six digits and can be pasted with spacing", () => {
+  for (let i = 0; i < 100; i++) {
+    const room = newRoom();
+    assert.match(room, /^[1-9]\d{5}$/);
+    assert.equal(normalizeRoom(displayRoom(room)), room);
   }
+  assert.equal(normalizeRoom("123 456"), "123456");
+  assert.equal(ROOM_PATTERN.test("abcdef1234567890abcdef12"), false);
 });
 test("signaling accepts SDP / ICE and rejects file data and malformed values", () => {
   assert.ok(
     isSignal({
       type: "signal",
+      session: crypto.randomUUID(),
       data: { kind: "description", type: "offer", sdp: "v=0" },
     }),
   );
   assert.ok(
     isSignal({
       type: "signal",
+      session: crypto.randomUUID(),
       data: { kind: "candidate", candidate: { candidate: "candidate:1" } },
     }),
   );
@@ -37,10 +40,12 @@ test("signaling accepts SDP / ICE and rejects file data and malformed values", (
     { type: "file" },
     {
       type: "signal",
+      session: crypto.randomUUID(),
       data: { kind: "description", type: "rollback", sdp: "x" },
     },
     {
       type: "signal",
+      session: crypto.randomUUID(),
       data: { kind: "description", type: "offer", sdp: "x".repeat(30000) },
     },
   ])
