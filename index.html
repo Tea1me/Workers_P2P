@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f7f8fa" />
+    <meta
+      name="description"
+      content="NearDrop — 让文件在身边的设备之间，安全、直接地流动。基于 WebRTC 的局域网文件传输。"
+    />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>NearDrop · 文件，近在咫尺</title>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="NearDrop 首页"
+          ><span class="brand-mark" data-icon="layers"></span>NearDrop<span
+            class="brand-tag"
+            >LOCAL FIRST</span
+          ></a
+        >
+        <div class="header-right">
+          <span class="privacy-badge"
+            ><span class="status-dot"></span>文件只在设备之间流动</span
+          ><button
+            class="icon-button"
+            id="help-button"
+            aria-label="使用帮助"
+            data-icon="help"
+          ></button
+          ><a
+            class="icon-button"
+            href="https://github.com/Tea1me/Workers_P2P"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="查看 GitHub 源码"
+            data-icon="github"
+          ></a>
+        </div>
+      </header>
+      <main>
+        <section class="intro">
+          <div>
+            <div class="eyebrow"><span></span>LESS DISTANCE. MORE FLOW.</div>
+            <h1>文件，<span>近在咫尺。</span></h1>
+            <p>
+              从这台设备，到你身边的另一台。<br
+                class="mobile-break"
+              />无需安装，让分享自然发生。
+            </p>
+          </div>
+          <div class="intro-note">
+            <span data-icon="shield"></span>
+            <div>
+              你的文件，无需绕远路<small>WebRTC 加密直传 · 无云端存储</small>
+            </div>
+          </div>
+        </section>
+        <div class="workspace">
+          <aside class="connection-panel card">
+            <div class="section-heading">
+              <h2><span class="section-index">01</span>连接设备</h2>
+              <span id="connection-badge" class="badge">未连接</span>
+            </div>
+            <div class="device-self">
+              <span class="device-icon" data-icon="laptop"></span>
+              <div>
+                <strong id="device-name">我的设备</strong
+                ><span>本机 · 准备就绪</span>
+              </div>
+              <span class="self-dot"></span>
+            </div>
+            <div id="room-start">
+              <p class="panel-label">让两台设备进入同一个房间</p>
+              <button id="create-room" class="button primary full">
+                <span data-icon="plus"></span>创建传输房间<span
+                  data-icon="arrow-right"
+                ></span>
+              </button>
+              <div class="divider"><span>或加入已有房间</span></div>
+              <form id="join-form">
+                <label class="sr-only" for="room-input">房间码或邀请链接</label>
+                <div class="join-input">
+                  <input
+                    id="room-input"
+                    placeholder="粘贴房间码或邀请链接"
+                    autocomplete="off"
+                    spellcheck="false"
+                    required
+                    maxlength="2048"
+                  /><button
+                    type="submit"
+                    aria-label="加入房间"
+                    data-icon="arrow-right"
+                  ></button>
+                </div>
+              </form>
+              <p class="input-hint">另一台设备打开本站，输入相同房间码</p>
+            </div>
+            <div id="room-active" hidden>
+              <div class="room-label">
+                当前房间 <span>私密 · 仅限 2 台设备</span>
+              </div>
+              <code id="room-code"></code>
+              <div class="room-actions">
+                <button id="copy-link" class="button secondary">
+                  <span data-icon="link"></span>复制邀请链接</button
+                ><button
+                  id="copy-code"
+                  class="icon-button"
+                  aria-label="复制房间码"
+                  data-icon="copy"
+                ></button>
+              </div>
+              <div class="peer-device">
+                <span id="peer-icon" class="peer-orbit" data-icon="radar"></span
+                ><strong id="peer-name">等待另一台设备…</strong
+                ><span id="peer-detail">分享邀请链接，即可建立连接</span>
+              </div>
+              <div class="connected-actions">
+                <button class="text-button" id="reconnect-button">
+                  重新连接</button
+                ><button class="text-button muted" id="leave-button">
+                  退出房间
+                </button>
+              </div>
+            </div>
+            <div class="connection-foot">
+              <span data-icon="wifi"></span
+              ><span id="network-label">请将两台设备连接到同一局域网</span>
+            </div>
+          </aside>
+          <section class="transfer-panel card">
+            <div class="section-heading">
+              <h2><span class="section-index">02</span>发送文件</h2>
+              <span class="quiet-label">DIRECT TRANSFER</span>
+            </div>
+            <div
+              id="drop-zone"
+              class="drop-zone"
+              role="button"
+              tabindex="0"
+              aria-label="选择或拖入要传输的文件"
+            >
+              <div class="drop-visual">
+                <div class="orbit orbit-one"></div>
+                <div class="orbit orbit-two"></div>
+                <span class="file-tile tile-back" data-icon="image"></span
+                ><span class="file-tile tile-front" data-icon="file"></span
+                ><span class="upload-bubble" data-icon="arrow-up"></span
+                ><i class="spark spark-one"></i><i class="spark spark-two"></i>
+              </div>
+              <h3>把文件放在这里</h3>
+              <p>
+                拖拽文件，或点击选择<br
+                  class="mobile-break"
+                />让它即刻抵达另一台设备
+              </p>
+              <span class="button primary choose-button"
+                ><span data-icon="plus"></span>选择文件</span
+              >
+              <span id="drop-hint" class="drop-hint"
+                ><span data-icon="lock"></span
+                >先连接设备，也可以提前选择文件</span
+              >
+            </div>
+            <input type="file" id="file-input" multiple hidden />
+            <div class="transfer-bottom">
+              <span><span data-icon="files"></span>支持多文件队列</span
+              ><span><span data-icon="shield-check"></span>逐块完整性校验</span
+              ><span><span data-icon="zap"></span>局域网原速直传</span>
+            </div>
+          </section>
+        </div>
+        <section class="activity card">
+          <div class="section-heading">
+            <h2>
+              <span class="section-index">03</span>传输动态
+              <span id="activity-count" class="count">0</span>
+            </h2>
+            <div class="activity-actions">
+              <button id="resume-button" class="text-button" hidden>
+                继续传输</button
+              ><button id="cancel-button" class="text-button" hidden>
+                取消当前</button
+              ><button id="clear-button" class="text-button muted">
+                清空记录
+              </button>
+            </div>
+          </div>
+          <div id="transfer-list" aria-live="polite"></div>
+          <div id="empty-state" class="empty-state">
+            <span data-icon="inbox"></span>
+            <div>
+              好东西，值得即刻分享。<small
+                >发送和接收的文件会显示在这里，记录仅保留在当前页面。</small
+              >
+            </div>
+            <span class="empty-line"></span>
+          </div>
+        </section>
+        <div class="how-it-works">
+          <span class="how-label">简单三步，就这么近</span
+          ><span><b>1</b>连接同一网络</span><i></i
+          ><span><b>2</b>分享房间链接</span><i></i
+          ><span><b>3</b>确认接收文件</span>
+        </div>
+      </main>
+      <footer>
+        <span
+          ><span class="tiny-brand" data-icon="layers"></span>NearDrop
+          <span class="footer-divider">/</span> 为近距离分享而生</span
+        ><span
+          >Built on Cloudflare Workers <span class="footer-dot">·</span> Powered
+          by WebRTC</span
+        >
+      </footer>
+    </div>
+    <div id="toast" class="toast" role="status" hidden></div>
+    <dialog id="receive-dialog">
+      <form method="dialog">
+        <div class="modal-icon" data-icon="download"></div>
+        <div class="eyebrow">INCOMING FILE</div>
+        <h2>有个文件，正向你而来。</h2>
+        <p id="receive-description"></p>
+        <div class="receive-file">
+          <span data-icon="file"></span>
+          <div>
+            <strong id="receive-name"></strong><span id="receive-size"></span>
+          </div>
+        </div>
+        <p class="modal-hint" id="save-hint"></p>
+        <div class="modal-actions">
+          <button class="button secondary" id="reject-file" value="reject">
+            拒绝</button
+          ><button class="button primary" id="accept-file" type="button">
+            <span data-icon="download"></span>接收文件
+          </button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="help-dialog">
+      <form method="dialog">
+        <div class="modal-icon" data-icon="radar"></div>
+        <h2>让分享，回到简单。</h2>
+        <ol class="help-steps">
+          <li>
+            <strong>连接同一个局域网</strong>
+            <p>
+              两台设备均需联网打开本站；访客 Wi-Fi、AP 隔离或 VPN
+              可能阻止设备直连。
+            </p>
+          </li>
+          <li>
+            <strong>创建房间，分享链接</strong>
+            <p>
+              在另一台设备打开邀请链接，或粘贴房间码。房间链接是配对凭证，请只分享给信任的接收人。
+            </p>
+          </li>
+          <li>
+            <strong>选择文件，确认接收</strong>
+            <p>
+              双方可互相发送。请保持页面打开、设备唤醒；断线后重新连接，再点击「继续传输」。
+            </p>
+          </li>
+        </ol>
+        <div class="help-note">
+          桌面 Chrome / Edge
+          支持直接写入磁盘。其他浏览器使用内存下载，单文件上限 128
+          MB。续传仅在双方页面未刷新且原文件仍可用时有效。本站不提供离线配对或公网中继。
+        </div>
+        <button class="button primary full">明白了，开始分享</button>
+      </form>
+    </dialog>
+    <script type="module" src="/src/client/main.ts"></script>
+  </body>
+</html>

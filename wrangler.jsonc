@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "workers-p2p",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-10-29",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "ROOMS", "class_name": "TransferRoom" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TransferRoom"] }],
+  "observability": { "enabled": false },
+}
