@@ -1213,3 +1213,14 @@ dialog p,
 .input-hint {
   font-size: 11px;
 }
+
+.receive-fallback {
+  display: block;
+  width: 100%;
+  padding: 14px 5px 0;
+  font-size: 12px;
+  min-height: 44px;
+}
+.modal-hint.receive-error {
+  color: #a2443a;
+}

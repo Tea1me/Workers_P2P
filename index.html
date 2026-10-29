@@ -230,7 +230,12 @@
             <strong id="receive-name"></strong><span id="receive-size"></span>
           </div>
         </div>
-        <p class="modal-hint" id="save-hint"></p>
+        <p
+          class="modal-hint"
+          id="save-hint"
+          role="status"
+          aria-live="polite"
+        ></p>
         <div class="modal-actions">
           <button class="button secondary" id="reject-file" value="reject">
             拒绝</button
@@ -238,6 +243,14 @@
             <span data-icon="download"></span>接收文件
           </button>
         </div>
+        <button
+          class="text-button receive-fallback"
+          id="download-fallback"
+          type="button"
+          hidden
+        >
+          无需选位置，直接下载接收
+        </button>
       </form>
     </dialog>
     <dialog id="help-dialog">
@@ -266,9 +279,9 @@
           </li>
         </ol>
         <div class="help-note">
-          桌面 Chrome / Edge
-          支持直接写入磁盘。其他浏览器使用内存下载，单文件上限 128
-          MB。续传仅在双方页面未刷新且原文件仍可用时有效。本站不提供离线配对或公网中继。
+          支持文件保存接口的浏览器可直接写入磁盘。手机接收 128 MiB
+          以内的文件默认使用下载模式；其他内存接收同样限 128
+          MiB。续传仅在双方页面未刷新且原文件仍可用时有效。本站不提供离线配对或公网中继。
         </div>
         <button class="button primary full">明白了，开始分享</button>
       </form>

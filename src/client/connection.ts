@@ -32,6 +32,7 @@ export class Connection {
   private id = "";
 
   private initiator = false;
+  private fastPair = false;
   private room = "";
   private name = "";
   constructor(private events: ConnectionEvents) {}
@@ -58,6 +59,7 @@ export class Connection {
     url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
     url.searchParams.set("id", this.id);
     url.searchParams.set("name", this.name);
+    url.searchParams.set("resume", this.pc ? "1" : "0");
     const ws = (this.ws = new WebSocket(url));
     const isCurrent = () => generation === this.generation && !this.stopped;
     ws.onopen = () => {
@@ -91,9 +93,11 @@ export class Connection {
             if (!this.open) this.events.state("waiting");
           } else if (m.type === "paired") {
             this.events.peer(String(m.peer.name));
-            // Both devices exchange current channel state. Only rebuild when either needs it.
             this.initiator = m.initiator === this.id;
+            this.fastPair = m.fresh === true && !this.open;
+            // Still send state for older clients, but do not wait a cloud round trip on first pair.
             this.signal({ kind: "state", open: this.open });
+            if (this.fastPair) await this.createPeer(this.initiator);
           } else if (m.type === "peer-left") {
             if (!this.open) {
               this.closePeer();
@@ -143,7 +147,10 @@ export class Connection {
   private async createPeer(initiator: boolean): Promise<void> {
     this.closePeer();
     this.events.state("connecting");
-    const pc = (this.pc = new RTCPeerConnection({ iceServers: [] }));
+    const pc = (this.pc = new RTCPeerConnection({
+      iceServers: [],
+      iceCandidatePoolSize: 1,
+    }));
     this.candidates = [];
     pc.onicecandidate = (event) => {
       if (this.pc === pc && event.candidate) {
@@ -196,6 +203,7 @@ export class Connection {
   }
   private async handleSignal(data: Record<string, unknown>): Promise<void> {
     if (data.kind === "state") {
+      if (this.fastPair) return;
       if (!(data.open && this.open)) await this.createPeer(this.initiator);
       return;
     }

@@ -102,7 +102,9 @@ test("two devices pair, relay validated signaling, and reject a third device", a
   const welcomeB = next(b);
   b.accept();
   assert.equal((await welcomeB).type, "welcome");
-  assert.equal((await pairedA).type, "paired");
+  const pairing = await pairedA;
+  assert.equal(pairing.type, "paired");
+  assert.equal(pairing.fresh, true);
   assert.equal((await connect(room)).status, 409);
   const signal = { type: "signal", data: { kind: "state", open: false } };
   const received = next(a);
@@ -136,4 +138,23 @@ test("binary file data on signaling socket is closed", async () => {
   );
   ws.send(new Uint8Array([1, 2, 3]).buffer);
   assert.equal(await closed, 1009);
+});
+
+test("retained-channel reconnect does not advertise a fresh negotiation", async () => {
+  const room = crypto.randomUUID().replaceAll("-", "").slice(0, 24);
+  const first = await connect(room);
+  const a = first.webSocket!;
+  const welcome = next(a);
+  a.accept();
+  await welcome;
+  const paired = next(a);
+  const second = await mf.dispatchFetch(
+    `https://near.test/api/room/${room}?id=${crypto.randomUUID()}&resume=1`,
+    { headers: { Upgrade: "websocket", Origin: "https://near.test" } },
+  );
+  const b = second.webSocket!;
+  b.accept();
+  assert.equal((await paired).fresh, false);
+  a.close(1000);
+  b.close(1000);
 });

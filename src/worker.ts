@@ -16,6 +16,7 @@ interface Attachment {
   name: string;
   window: number;
   count: number;
+  resume: boolean;
 }
 const securityHeaders: Record<string, string> = {
   "Content-Security-Policy":
@@ -95,6 +96,7 @@ export class TransferRoom extends DurableObject<Env> {
       name,
       window: Date.now(),
       count: 0,
+      resume: url.searchParams.get("resume") === "1",
     } satisfies Attachment);
     this.ctx.setWebSocketAutoResponse(
       new WebSocketRequestResponsePair("ping", "pong"),
@@ -114,6 +116,10 @@ export class TransferRoom extends DurableObject<Env> {
     const peers = this.sockets();
     if (peers.length === 2) {
       const initiator = (peers[0].deserializeAttachment() as Attachment).id;
+      // Fresh channels can negotiate immediately; retained channels still probe each other.
+      const fresh = peers.every(
+        (peer) => !(peer.deserializeAttachment() as Attachment).resume,
+      );
       for (const peer of peers) {
         const other = peers.find((p) => p !== peer)!;
         const info = other.deserializeAttachment() as Attachment;
@@ -121,6 +127,7 @@ export class TransferRoom extends DurableObject<Env> {
           JSON.stringify({
             type: "paired",
             initiator,
+            fresh,
             peer: { id: info.id, name: info.name },
           }),
         );

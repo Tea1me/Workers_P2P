@@ -14,6 +14,7 @@ import {
 } from "../shared/protocol";
 import { bytes, deviceName, safeName } from "./format";
 import { hydrateIcons, icon } from "./icons";
+import { ReceiveController, isMobileDevice, type SavePicker } from "./receive";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) =>
   document.getElementById(id) as T;
@@ -101,15 +102,10 @@ interface Row {
 }
 const rows = new Map<string, Row>();
 const receiveDialog = $<HTMLDialogElement>("receive-dialog");
-const savePicker = (
-  window as unknown as {
-    showSaveFilePicker?: (options: {
-      suggestedName: string;
-    }) => Promise<{
-      createWritable: () => Promise<FileSystemWritableFileStream>;
-    }>;
-  }
-).showSaveFilePicker;
+const pickerAPI = (window as unknown as { showSaveFilePicker?: SavePicker })
+  .showSaveFilePicker;
+const savePicker =
+  typeof pickerAPI === "function" ? pickerAPI.bind(window) : undefined;
 const engine = new TransferEngine(connection, {
   offer: (meta) =>
     new Promise((resolve) => {
@@ -118,55 +114,41 @@ const engine = new TransferEngine(connection, {
       $("receive-description").textContent =
         `${peerName} 想向你发送一个文件。仅接收你信任的内容。`;
       const accept = $<HTMLButtonElement>("accept-file");
-      const tooLarge = !savePicker && meta.size > MEMORY_LIMIT;
-      accept.disabled = tooLarge;
-      accept.innerHTML = icon("download");
-      accept.append(
-        document.createTextNode(savePicker ? "选择位置并接收" : "接收并下载"),
-      );
-      $("save-hint").textContent = savePicker
-        ? "选择保存位置后直接写入磁盘，大文件也无需全部载入内存。"
-        : tooLarge
-          ? "此浏览器仅支持 128 MB 以内的文件。请改用桌面 Chrome / Edge 接收大文件。"
-          : "此浏览器使用内存接收。校验完成后，点击传输记录中的「保存文件」。";
+      const fallback = $<HTMLButtonElement>("download-fallback");
       let decision: { sink?: Sink } | null = null;
-      let picking = false;
-      const close = () => {
-        accept.onclick = null;
-        resolve(decision);
+      const controller = new ReceiveController(
+        meta,
+        isMobileDevice(navigator),
+        savePicker,
+        {
+          render: (view) => {
+            accept.disabled = view.disabled;
+            accept.innerHTML = icon("download");
+            accept.append(document.createTextNode(view.label));
+            fallback.hidden = !view.fallback;
+            $("save-hint").textContent = view.hint;
+            $("save-hint").classList.toggle("receive-error", view.error);
+          },
+          accept: (result) => {
+            decision = result;
+            receiveDialog.close("accept");
+          },
+        },
+      );
+      receiveDialog.addEventListener(
+        "close",
+        () => {
+          controller.close();
+          accept.onclick = null;
+          fallback.onclick = null;
+          resolve(decision);
+        },
+        { once: true },
+      );
+      accept.onclick = () => {
+        void controller.accept();
       };
-      receiveDialog.addEventListener("close", close, { once: true });
-      accept.onclick = async () => {
-        if (picking) return;
-        picking = true;
-        accept.disabled = true;
-        try {
-          let sink: Sink | undefined;
-          if (savePicker) {
-            const handle = await savePicker.call(window, {
-              suggestedName: safeName(meta.name),
-            });
-            const writable = await handle.createWritable();
-            sink = {
-              write: (data) => writable.write(data),
-              close: () => writable.close(),
-              abort: () => writable.abort(),
-            };
-          }
-          if (!receiveDialog.open) {
-            await sink?.abort();
-            return;
-          }
-          decision = { sink };
-          receiveDialog.close("accept");
-        } catch (error) {
-          if ((error as Error).name !== "AbortError")
-            toast(`无法创建文件：${(error as Error).message}`);
-        } finally {
-          picking = false;
-          accept.disabled = false;
-        }
-      };
+      fallback.onclick = () => controller.download();
       receiveDialog.showModal();
     }),
   progress: (progress) => {
