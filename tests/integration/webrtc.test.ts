@@ -43,6 +43,7 @@ test(
     }
     const mf = await createRuntime();
     const originals = new Map<string, PropertyDescriptor | undefined>();
+    let intentionalDisconnect = false;
     let signalCount = 0;
     const trace: unknown[] = [];
     class LocalPeer extends NativePeer {
@@ -121,7 +122,8 @@ test(
       const connection = new Connection({
         state(state, detail) {
           trace.push(["state", state, detail]);
-          if (state === "failed") errors.push(detail ?? "failed");
+          if (state === "failed" && !intentionalDisconnect)
+            errors.push(detail ?? "failed");
         },
         peer() {},
         message(data) {
@@ -159,7 +161,9 @@ test(
       const deadline = Date.now() + 10000;
       while (!predicate()) {
         if (a.errors.length || b.errors.length)
-          throw new Error([...a.errors, ...b.errors].join("; "));
+          throw new Error(
+            [...a.errors, ...b.errors].join("; ") + JSON.stringify(trace),
+          );
         if (Date.now() > deadline)
           throw new Error(
             "Real RTC channel did not open: " + JSON.stringify(trace),
@@ -181,6 +185,8 @@ test(
         .update(new Uint8Array(await b.downloads[0].blob.arrayBuffer()))
         .digest("hex");
       assert.equal(receivedHash, originalHash);
+      // The remote channel is expected to close while one device explicitly reconnects.
+      intentionalDisconnect = true;
       a.connection.reconnect();
       await waitFor(
         () =>
@@ -189,6 +195,7 @@ test(
           a.connection.open &&
           b.connection.open,
       );
+      intentionalDisconnect = false;
       assert.equal(
         await b.engine.send(new File(["手机 → 电脑"], "reverse.txt")),
         "completed",

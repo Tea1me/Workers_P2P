@@ -112,6 +112,7 @@ test("a replacement session filters stale SDP and preserves two-device capacity"
   const current = await updated;
   assert.notEqual(current.session, old.session);
   const received = next(b);
+  r.send(JSON.stringify({ type: "status", session: old.session, open: false }));
   r.send(
     JSON.stringify({
       type: "signal",

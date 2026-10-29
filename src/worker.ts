@@ -238,10 +238,13 @@ export class TransferRoom extends DurableObject<Env> {
       if (
         isRecord(data) &&
         data.type === "status" &&
-        data.session === attachment.session &&
+        typeof data.session === "string" &&
+        CLIENT_PATTERN.test(data.session) &&
         typeof data.open === "boolean"
       ) {
-        ws.serializeAttachment({ ...attachment, ready: data.open });
+        // A channel can close just as a new pair is created. Ignore its late health update.
+        if (data.session === attachment.session)
+          ws.serializeAttachment({ ...attachment, ready: data.open });
         return;
       }
       if (!isSignal(data)) {
