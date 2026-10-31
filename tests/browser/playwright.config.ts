@@ -12,13 +12,26 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   projects: [
-    { name: "firefox", use: { browserName: "firefox" } },
+    {
+      name: "firefox",
+      use: { browserName: "firefox" },
+      testIgnore: "rtc.spec.ts",
+    },
     { name: "chromium", use: { browserName: "chromium" } },
   ],
-  webServer: {
-    command: "node tests/browser/server.mjs",
-    cwd: fileURLToPath(new URL("../../", import.meta.url)),
-    url: "http://127.0.0.1:4174",
-    reuseExistingServer: !process.env.CI,
-  },
+  webServer: [
+    {
+      command: "node tests/browser/server.mjs",
+      cwd: fileURLToPath(new URL("../../", import.meta.url)),
+      url: "http://127.0.0.1:4174",
+      reuseExistingServer: !process.env.CI,
+    },
+    {
+      command: "npm run dev -- --host 127.0.0.1 --port 4175",
+      cwd: fileURLToPath(new URL("../../", import.meta.url)),
+      url: "http://127.0.0.1:4175",
+      reuseExistingServer: !process.env.CI,
+      timeout: 60000,
+    },
+  ],
 });
