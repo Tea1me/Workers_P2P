@@ -47,48 +47,48 @@ async function instrumentation(page: Page) {
     target.__rtc = [];
     target.__channels = [];
     target.__binarySent = 0;
+    const watch = (channel: RTCDataChannel) => {
+      target.__channels.push(channel);
+      let stalled = false;
+      const amount = Object.getOwnPropertyDescriptor(
+        RTCDataChannel.prototype,
+        "bufferedAmount",
+      )!.get!;
+      const send = channel.send.bind(channel) as (
+        data: string | Blob | ArrayBuffer | ArrayBufferView,
+      ) => void;
+      Object.defineProperty(channel, "bufferedAmount", {
+        configurable: true,
+        get: () => (stalled ? 2 * 1024 * 1024 : amount.call(channel)),
+      });
+      Object.defineProperty(channel, "send", {
+        configurable: true,
+        value: (data: string | Blob | ArrayBuffer | ArrayBufferView) => {
+          send(data);
+          if (typeof data !== "string")
+            target.__binarySent +=
+              data instanceof Blob ? data.size : data.byteLength;
+          if (
+            target.__stallAt &&
+            !target.__stallInjected &&
+            target.__binarySent >= target.__stallAt
+          ) {
+            target.__stallInjected = true;
+            stalled = true;
+          }
+        },
+      });
+      return channel;
+    };
     const Native = window.RTCPeerConnection;
     window.RTCPeerConnection = class extends Native {
       constructor(configuration?: RTCConfiguration) {
         super(configuration);
         target.__rtc.push(this);
-        this.addEventListener("datachannel", (event) =>
-          target.__channels.push(event.channel),
-        );
+        this.addEventListener("datachannel", (event) => watch(event.channel));
       }
       createDataChannel(label: string, options?: RTCDataChannelInit) {
-        const channel = super.createDataChannel(label, options);
-        target.__channels.push(channel);
-        let stalled = false;
-        const amount = Object.getOwnPropertyDescriptor(
-          RTCDataChannel.prototype,
-          "bufferedAmount",
-        )!.get!;
-        const send = channel.send.bind(channel) as (
-          data: string | Blob | ArrayBuffer | ArrayBufferView,
-        ) => void;
-        Object.defineProperty(channel, "bufferedAmount", {
-          configurable: true,
-          get: () => (stalled ? 2 * 1024 * 1024 : amount.call(channel)),
-        });
-        Object.defineProperty(channel, "send", {
-          configurable: true,
-          value: (data: string | Blob | ArrayBuffer | ArrayBufferView) => {
-            send(data);
-            if (typeof data !== "string")
-              target.__binarySent +=
-                data instanceof Blob ? data.size : data.byteLength;
-            if (
-              target.__stallAt &&
-              !target.__stallInjected &&
-              target.__binarySent >= target.__stallAt
-            ) {
-              target.__stallInjected = true;
-              stalled = true;
-            }
-          },
-        });
-        return channel;
+        return watch(super.createDataChannel(label, options));
       }
     };
   });
