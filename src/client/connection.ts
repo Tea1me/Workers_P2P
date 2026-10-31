@@ -359,6 +359,7 @@ export class Connection {
     await new Promise<void>((resolve, reject) => {
       const cleanup = () => {
         clearTimeout(timer);
+        clearInterval(poll);
         channel.removeEventListener("bufferedamountlow", low);
         channel.removeEventListener("close", closed);
       };
@@ -374,6 +375,12 @@ export class Connection {
         cleanup();
         reject(new Error("传输缓冲区超时"));
       }, 30000);
+      // Some RTC implementations omit or miss the low-buffer event. Poll only while under pressure.
+      const poll = setInterval(() => {
+        if (channel.readyState !== "open") closed();
+        else if (channel.bufferedAmount <= channel.bufferedAmountLowThreshold)
+          low();
+      }, 20);
       channel.addEventListener("bufferedamountlow", low);
       channel.addEventListener("close", closed);
       if (channel.bufferedAmount <= channel.bufferedAmountLowThreshold) low();

@@ -2,7 +2,7 @@ import { test, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { Connection } from "../src/client/connection";
 
-class FakeChannel {
+class FakeChannel extends EventTarget {
   readyState = "connecting";
   bufferedAmount = 0;
   bufferedAmountLowThreshold = 0;
@@ -212,4 +212,19 @@ test("failed ICE gets one automatic restart and no retry loop", async () => {
   await settle();
   assert.equal(pc.restarts, 1);
   assert.equal(pc.connectionState, "closed");
+});
+
+test("backpressure recovers even when the browser never emits bufferedamountlow", async () => {
+  const h = harness();
+  h.pair();
+  await settle();
+  const channel = FakePeer.instances[0].channel!;
+  channel.open();
+  channel.bufferedAmount = 2 * 1024 * 1024;
+  const drained = h.connection.drain();
+  setTimeout(() => {
+    channel.bufferedAmount = 0;
+  }, 5);
+  await drained;
+  assert.equal(h.connection.open, true);
 });
