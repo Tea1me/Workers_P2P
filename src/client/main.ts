@@ -19,6 +19,7 @@ const name = deviceName();
 $("device-name").textContent = name;
 let room = "";
 let peerName = "另一台设备";
+const recovery = { id: "", attempts: 0, resume: false };
 let toastTimer: ReturnType<typeof setTimeout>;
 function toast(message: string): void {
   $("toast").textContent = message;
@@ -75,8 +76,14 @@ const connection = new Connection({
     void engine.receive(data);
   },
   ready: () => {
-    toast(`已连接 ${peerName}`);
-    void pump();
+    if (recovery.resume && engine.resumable) {
+      recovery.resume = false;
+      toast("连接已恢复，正在继续未完成的文件");
+      void pump(true);
+    } else {
+      toast(`已连接 ${peerName}`);
+      void pump();
+    }
   },
   lost: () => {
     engine.disconnected();
@@ -153,6 +160,43 @@ const engine = new TransferEngine(connection, {
       receiveDialog.showModal();
     }),
   progress: (progress) => {
+    let displayed = progress;
+    if (progress.direction === "send") {
+      if (recovery.id !== progress.id) {
+        recovery.id = progress.id;
+        recovery.attempts = 0;
+        recovery.resume = false;
+      }
+      if (
+        progress.status === "paused" &&
+        progress.detail?.includes("传输缓冲区") &&
+        recovery.attempts < 2 &&
+        room
+      ) {
+        recovery.attempts++;
+        recovery.resume = true;
+        displayed = {
+          ...progress,
+          status: "recovering",
+          detail: `连接停滞，正在自动重连并续传（${recovery.attempts}/2）`,
+        };
+        toast(displayed.detail!);
+        setTimeout(() => {
+          if (
+            recovery.resume &&
+            recovery.id === progress.id &&
+            engine.resumable
+          )
+            connection.reconnect();
+        }, 0);
+      }
+      if (
+        ["completed", "rejected", "cancelled", "error"].includes(
+          progress.status,
+        )
+      )
+        recovery.resume = false;
+    }
     const row = rows.get(progress.id);
     if (
       (progress.status === "sending" || progress.status === "receiving") &&
@@ -163,7 +207,7 @@ const engine = new TransferEngine(connection, {
     if (progress.direction === "send" && activeQueue) {
       removeRow(activeQueue.id);
     }
-    renderProgress(progress);
+    renderProgress(displayed);
     updateControls();
     if (
       ["completed", "rejected", "cancelled", "error"].includes(progress.status)
@@ -255,6 +299,8 @@ const statusText = {
   sending: "发送中",
   receiving: "接收中",
   paused: "已暂停",
+  recovering: "自动恢复中",
+  finalizing: "正在完成",
   completed: "已完成",
   rejected: "已拒绝",
   error: "失败",
@@ -284,7 +330,7 @@ function renderProgress(p: Progress): void {
       ? 100
       : 0;
   const detail = row.el.querySelector(".row-detail")!;
-  detail.textContent = `${p.direction === "send" ? "发送" : "接收"} · ${bytes(p.bytes)} / ${bytes(p.size)}${["sending", "receiving"].includes(p.status) && row.speed ? ` · ${bytes(row.speed)}/s` : ""}${p.detail ? ` · ${p.detail}` : ""}`;
+  detail.textContent = `${p.direction === "send" ? "发送" : "接收"} · ${bytes(p.bytes)} / ${bytes(p.size)}${["sending", "receiving"].includes(p.status) && row.speed ? ` · ${bytes(row.speed)}/s` : ""}${p.status === "finalizing" ? " · 数据已接收，正在整理文件并确认完成" : ""}${p.detail ? ` · ${p.detail}` : ""}`;
   (row.el.querySelector(".progress-fill") as HTMLElement).style.width =
     `${percent}%`;
   const status = row.el.querySelector(".row-status")!;
@@ -527,7 +573,7 @@ window.addEventListener("online", () => {
 let wakeLock: WakeLockSentinel | undefined;
 async function updateWakeLock(): Promise<void> {
   const active = Array.from(rows.values()).some((r) =>
-    ["sending", "receiving"].includes(r.status),
+    ["sending", "receiving", "recovering", "finalizing"].includes(r.status),
   );
   try {
     if (active && !wakeLock && document.visibilityState === "visible") {

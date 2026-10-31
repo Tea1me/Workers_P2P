@@ -410,3 +410,29 @@ test("disk-backed completed files retain a release function and do not build an 
   await cleanup();
   assert.equal(released, true);
 });
+
+test("completion phase is explicit and a partial final frame yields an exact memory download", async () => {
+  const h = harness();
+  const original = file(47 * 1024 * 1024 + 777);
+  assert.equal(await h.a.send(original), "completed");
+  assert.ok(
+    h.progresses.some(
+      (p) =>
+        p.direction === "receive" &&
+        p.status === "finalizing" &&
+        p.bytes === original.size,
+    ),
+  );
+  assert.ok(
+    h.progresses.some(
+      (p) =>
+        p.direction === "send" &&
+        p.status === "finalizing" &&
+        p.bytes === original.size,
+    ),
+  );
+  assert.deepEqual(
+    await h.downloads[0].arrayBuffer(),
+    await original.arrayBuffer(),
+  );
+});

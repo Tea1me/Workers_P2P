@@ -2,7 +2,9 @@ import { isRecord } from "../shared/protocol";
 import { safeName } from "./format";
 export const BLOCK_SIZE = 1024 * 1024;
 export const WINDOW_BYTES = 8 * BLOCK_SIZE;
-export const CHUNK_SIZE = 64 * 1024;
+export const CHUNK_SIZE = 16 * 1024;
+// Accept already deployed senders while using conservative cross-browser frames for new sends.
+const MAX_FRAME_BYTES = 64 * 1024;
 export const MEMORY_LIMIT = 128 * 1024 * 1024;
 export interface Metadata {
   id: string;
@@ -16,6 +18,8 @@ export type TransferStatus =
   | "sending"
   | "receiving"
   | "paused"
+  | "recovering"
+  | "finalizing"
   | "completed"
   | "rejected"
   | "error"
@@ -45,7 +49,7 @@ interface Incoming {
   meta: Metadata;
   offset: number;
   sink?: Sink;
-  parts: ArrayBuffer[];
+  parts: Blob[];
   block?: {
     offset: number;
     size: number;
@@ -285,6 +289,7 @@ export class TransferEngine {
         current();
       }
       this.acknowledgements = undefined;
+      this.report(meta, file.size, "send", "finalizing");
       await this.wait(meta.id, "complete", () =>
         this.control({ type: "finish", id: meta.id }),
       );
@@ -542,7 +547,7 @@ export class TransferEngine {
         throw new Error("SHA-256 校验失败，请重新发送");
       if (incoming.sink)
         await incoming.sink.write(block.buffer.buffer as ArrayBuffer);
-      else incoming.parts.push(block.buffer.buffer as ArrayBuffer);
+      else incoming.parts.push(new Blob([block.buffer.buffer as ArrayBuffer]));
       incoming.offset += block.size;
       incoming.block = undefined;
       this.respond({
@@ -554,6 +559,7 @@ export class TransferEngine {
     } else if (m.type === "finish") {
       if (incoming.block || incoming.offset !== incoming.meta.size)
         throw new Error("文件长度不匹配");
+      this.report(incoming.meta, incoming.offset, "receive", "finalizing");
       if (incoming.sink) {
         await incoming.sink.close();
         if (incoming.sink.getFile) {
@@ -584,7 +590,7 @@ export class TransferEngine {
     if (
       !block ||
       data.byteLength === 0 ||
-      data.byteLength > CHUNK_SIZE ||
+      data.byteLength > MAX_FRAME_BYTES ||
       block.filled + data.byteLength > block.size
     )
       throw new Error("收到超出预期的文件数据");

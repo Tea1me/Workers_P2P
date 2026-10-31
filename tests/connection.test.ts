@@ -6,6 +6,10 @@ class FakeChannel extends EventTarget {
   readyState = "connecting";
   bufferedAmount = 0;
   bufferedAmountLowThreshold = 0;
+  sent: (string | ArrayBuffer)[] = [];
+  send(data: string | ArrayBuffer) {
+    this.sent.push(data);
+  }
   onopen?: () => void;
   onclose?: () => void;
   open() {
@@ -227,4 +231,51 @@ test("backpressure recovers even when the browser never emits bufferedamountlow"
   }, 5);
   await drained;
   assert.equal(h.connection.open, true);
+});
+
+test("binary frames stay at or below 16 KiB even when SCTP advertises larger messages", async () => {
+  const h = harness();
+  h.pair();
+  await settle();
+  const channel = FakePeer.instances[0].channel!;
+  channel.open();
+  h.connection.send(new ArrayBuffer(100 * 1024));
+  assert.equal(channel.sent.length, 7);
+  assert.ok(
+    channel.sent.every(
+      (frame) => frame instanceof ArrayBuffer && frame.byteLength <= 16 * 1024,
+    ),
+  );
+});
+test("a slow but progressing buffer is allowed to drain for longer than thirty seconds", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "Date"] });
+  const h = harness();
+  h.pair();
+  await settle();
+  const channel = FakePeer.instances[0].channel!;
+  channel.open();
+  channel.bufferedAmount = 2 * 1024 * 1024;
+  const draining = h.connection.drain();
+  for (let i = 0; i < 4; i++) {
+    t.mock.timers.tick(20000);
+    channel.bufferedAmount -= 128 * 1024;
+    t.mock.timers.tick(20);
+  }
+  channel.bufferedAmount = 0;
+  t.mock.timers.tick(20);
+  await draining;
+  assert.equal(h.connection.open, true);
+});
+test("a genuinely stalled buffer fails and closes the unusable peer", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "Date"] });
+  const h = harness();
+  h.pair();
+  await settle();
+  const channel = FakePeer.instances[0].channel!;
+  channel.open();
+  channel.bufferedAmount = 2 * 1024 * 1024;
+  const rejected = assert.rejects(h.connection.drain(), /没有发送进展/);
+  t.mock.timers.tick(30020);
+  await rejected;
+  assert.equal(h.connection.open, false);
 });

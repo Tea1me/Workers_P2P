@@ -40,9 +40,13 @@ async function instrumentation(page: Page) {
     const target = window as unknown as {
       __rtc: RTCPeerConnection[];
       __channels: RTCDataChannel[];
+      __binarySent: number;
+      __stallAt?: number;
+      __stallInjected?: boolean;
     };
     target.__rtc = [];
     target.__channels = [];
+    target.__binarySent = 0;
     const Native = window.RTCPeerConnection;
     window.RTCPeerConnection = class extends Native {
       constructor(configuration?: RTCConfiguration) {
@@ -55,6 +59,35 @@ async function instrumentation(page: Page) {
       createDataChannel(label: string, options?: RTCDataChannelInit) {
         const channel = super.createDataChannel(label, options);
         target.__channels.push(channel);
+        let stalled = false;
+        const amount = Object.getOwnPropertyDescriptor(
+          RTCDataChannel.prototype,
+          "bufferedAmount",
+        )!.get!;
+        const send = channel.send.bind(channel) as (
+          data: string | Blob | ArrayBuffer | ArrayBufferView,
+        ) => void;
+        Object.defineProperty(channel, "bufferedAmount", {
+          configurable: true,
+          get: () => (stalled ? 2 * 1024 * 1024 : amount.call(channel)),
+        });
+        Object.defineProperty(channel, "send", {
+          configurable: true,
+          value: (data: string | Blob | ArrayBuffer | ArrayBufferView) => {
+            send(data);
+            if (typeof data !== "string")
+              target.__binarySent +=
+                data instanceof Blob ? data.size : data.byteLength;
+            if (
+              target.__stallAt &&
+              !target.__stallInjected &&
+              target.__binarySent >= target.__stallAt
+            ) {
+              target.__stallInjected = true;
+              stalled = true;
+            }
+          },
+        });
         return channel;
       }
     };
@@ -109,6 +142,7 @@ async function verifyTransfer(
   await expect(receiver.locator("#receive-dialog")).toBeVisible();
   await receiver.locator("#accept-file").click();
   const deadline = Date.now() + 180000;
+  let failureSince = 0;
   while (true) {
     const sending = await sender
       .locator(".row-status")
@@ -119,8 +153,11 @@ async function verifyTransfer(
       .nth(round)
       .textContent();
     if (sending === "已完成" && receiving === "已完成") break;
+    const failed = /暂停|失败|取消|拒绝/.test(`${sending} ${receiving}`);
+    if (failed && !failureSince) failureSince = Date.now();
+    if (!failed) failureSince = 0;
     if (
-      /暂停|失败|取消|拒绝/.test(`${sending} ${receiving}`) ||
+      (failureSince && Date.now() - failureSince > 5000) ||
       Date.now() > deadline
     )
       throw new Error(
@@ -168,9 +205,7 @@ for (const target of ["chromium", "firefox"] as const) {
       const room = await sender.locator("#room-code").textContent();
       await receiver.goto(APP);
       await receiver.locator("#room-input").fill(room!);
-      await receiver
-        .locator("#join-form")
-        .evaluate((form: HTMLFormElement) => form.requestSubmit());
+      await receiver.locator("#join-form").getByRole("button").click();
       try {
         await expect(sender.locator("#connection-badge")).toHaveText("已直连", {
           timeout: 45000,
@@ -186,12 +221,34 @@ for (const target of ["chromium", "firefox"] as const) {
       }
       for (let round = 0; round < (target === "chromium" ? 3 : 2); round++) {
         const size = (target === "chromium" ? 47 : 347) * 1024 * 1024 + 777;
+        if (target === "firefox" && round === 1)
+          await sender.evaluate(() => {
+            const state = window as unknown as {
+              __binarySent: number;
+              __stallAt: number;
+            };
+            state.__stallAt = state.__binarySent + 50 * 1024 * 1024;
+          });
         await verifyTransfer(
           sender,
           receiver,
           await sourceFile(directory, size, round),
           round,
         );
+        if (target === "firefox" && round === 1) {
+          const recovery = await sender.evaluate(() => {
+            const state = window as unknown as {
+              __stallInjected?: boolean;
+              __channels: RTCDataChannel[];
+            };
+            return {
+              injected: state.__stallInjected,
+              channels: state.__channels.length,
+            };
+          });
+          expect(recovery.injected).toBe(true);
+          expect(recovery.channels).toBeGreaterThan(1);
+        }
       }
     } finally {
       for (const context of contexts) await context.close();

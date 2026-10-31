@@ -342,8 +342,8 @@ export class Connection {
     if (typeof data === "string") this.channel!.send(data);
     else {
       const limit = Math.min(
-        64 * 1024,
-        this.pc?.sctp?.maxMessageSize || 64 * 1024,
+        16 * 1024,
+        this.pc?.sctp?.maxMessageSize || 16 * 1024,
       );
       if (data.byteLength <= limit) this.channel!.send(data);
       else
@@ -357,8 +357,9 @@ export class Connection {
       throw new Error("连接已断开");
     if (channel.bufferedAmount <= 1024 * 1024) return;
     await new Promise<void>((resolve, reject) => {
+      let previous = channel.bufferedAmount;
+      let progressAt = Date.now();
       const cleanup = () => {
-        clearTimeout(timer);
         clearInterval(poll);
         channel.removeEventListener("bufferedamountlow", low);
         channel.removeEventListener("close", closed);
@@ -371,21 +372,35 @@ export class Connection {
         cleanup();
         reject(new Error("连接已断开"));
       };
-      const timer = setTimeout(() => {
-        cleanup();
-        reject(new Error("传输缓冲区超时"));
-      }, 30000);
-      // Some RTC implementations omit or miss the low-buffer event. Poll only while under pressure.
-      const poll = setInterval(() => {
-        if (channel.readyState !== "open") closed();
-        else if (channel.bufferedAmount <= channel.bufferedAmountLowThreshold)
+      const check = () => {
+        if (channel.readyState !== "open") {
+          closed();
+          return;
+        }
+        const amount = channel.bufferedAmount;
+        if (amount <= channel.bufferedAmountLowThreshold) {
           low();
-      }, 20);
+          return;
+        }
+        if (amount < previous) progressAt = Date.now();
+        previous = amount;
+        // Time out an actual stall, not a long but progressing drain or a delayed background timer.
+        if (Date.now() - progressAt >= 30000) {
+          cleanup();
+          const error = new Error(
+            `传输缓冲区 30 秒没有发送进展（剩余 ${Math.ceil(amount / 1024)} KB），请重新连接后继续`,
+          );
+          reject(error);
+          this.failPeer(error.message);
+        }
+      };
+      const poll = setInterval(check, 20);
       channel.addEventListener("bufferedamountlow", low);
       channel.addEventListener("close", closed);
-      if (channel.bufferedAmount <= channel.bufferedAmountLowThreshold) low();
+      check();
     });
   }
+
   private failPeer(detail: string): void {
     this.closePeer();
     this.events.state("failed", detail);
