@@ -10,6 +10,7 @@ import { normalizeRoom, ROOM_PATTERN, displayRoom } from "../shared/protocol";
 import { bytes, deviceName, safeName } from "./format";
 import { hydrateIcons, icon } from "./icons";
 import { ReceiveController, type SavePicker } from "./receive";
+import { createTemporarySink, hasTemporaryStorage } from "./storage";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) =>
   document.getElementById(id) as T;
@@ -93,7 +94,9 @@ interface Row {
   sampleBytes: number;
   sampleTime: number;
   speed: number;
+  renderedAt?: number;
   blobSize?: number;
+  release?: () => Promise<void>;
 }
 const rows = new Map<string, Row>();
 const receiveDialog = $<HTMLDialogElement>("receive-dialog");
@@ -111,21 +114,26 @@ const engine = new TransferEngine(connection, {
       const accept = $<HTMLButtonElement>("accept-file");
       const fallback = $<HTMLButtonElement>("download-fallback");
       let decision: { sink?: Sink } | null = null;
-      const controller = new ReceiveController(meta, savePicker, {
-        render: (view) => {
-          accept.disabled = view.disabled;
-          accept.innerHTML = icon("download");
-          accept.append(document.createTextNode(view.label));
-          fallback.hidden = !view.fallback;
-          fallback.textContent = view.alternateLabel;
-          $("save-hint").textContent = view.hint;
-          $("save-hint").classList.toggle("receive-error", view.error);
+      const controller = new ReceiveController(
+        meta,
+        savePicker,
+        {
+          render: (view) => {
+            accept.disabled = view.disabled;
+            accept.innerHTML = icon("download");
+            accept.append(document.createTextNode(view.label));
+            fallback.hidden = !view.fallback;
+            fallback.textContent = view.alternateLabel;
+            $("save-hint").textContent = view.hint;
+            $("save-hint").classList.toggle("receive-error", view.error);
+          },
+          accept: (result) => {
+            decision = result;
+            receiveDialog.close("accept");
+          },
         },
-        accept: (result) => {
-          decision = result;
-          receiveDialog.close("accept");
-        },
-      });
+        hasTemporaryStorage() ? () => createTemporarySink(meta) : undefined,
+      );
       receiveDialog.addEventListener(
         "close",
         () => {
@@ -145,6 +153,13 @@ const engine = new TransferEngine(connection, {
       receiveDialog.showModal();
     }),
   progress: (progress) => {
+    const row = rows.get(progress.id);
+    if (
+      (progress.status === "sending" || progress.status === "receiving") &&
+      row?.status === progress.status &&
+      performance.now() - (row.renderedAt ?? 0) < 100
+    )
+      return;
     if (progress.direction === "send" && activeQueue) {
       removeRow(activeQueue.id);
     }
@@ -160,7 +175,7 @@ const engine = new TransferEngine(connection, {
     if (progress.status === "error") toast(progress.detail ?? "传输失败");
     void updateWakeLock();
   },
-  download: (meta, blob) => {
+  download: (meta, blob, release) => {
     let row = rows.get(meta.id);
     if (!row) {
       renderProgress({
@@ -177,7 +192,7 @@ const engine = new TransferEngine(connection, {
     );
     for (const old of rows.values()) {
       if (retained + blob.size <= MEMORY_LIMIT * 2) break;
-      if (old.url) {
+      if (old.url && old.blobSize) {
         URL.revokeObjectURL(old.url);
         old.url = undefined;
         retained -= old.blobSize ?? 0;
@@ -188,7 +203,8 @@ const engine = new TransferEngine(connection, {
     }
     const url = URL.createObjectURL(blob);
     row.url = url;
-    row.blobSize = blob.size;
+    row.blobSize = release ? 0 : blob.size;
+    row.release = release;
     const link = document.createElement("a");
     link.className = "download-link";
     link.href = url;
@@ -229,6 +245,7 @@ function removeRow(id: string): void {
   const row = rows.get(id);
   if (!row) return;
   if (row.url) URL.revokeObjectURL(row.url);
+  void row.release?.().catch(() => toast("临时文件未能清理，稍后可重试"));
   row.el.remove();
   rows.delete(id);
   updateCount();
@@ -260,6 +277,7 @@ function renderProgress(p: Progress): void {
     row.sampleTime = now;
   }
   row.status = p.status;
+  row.renderedAt = now;
   const percent = p.size
     ? Math.min(100, (p.bytes / p.size) * 100)
     : p.status === "completed"

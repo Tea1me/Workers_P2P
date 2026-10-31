@@ -10,7 +10,7 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       WRANGLER_SEND_METRICS: "false"
     steps:
@@ -23,4 +23,6 @@ jobs:
       - run: npm run check
       - run: npm test
       - run: npm run test:integration
+      - run: npx playwright install --with-deps firefox chromium
+      - run: npm run test:browser
       - run: npm run deploy:check

@@ -1,6 +1,7 @@
 import { isRecord } from "../shared/protocol";
 import { safeName } from "./format";
 export const BLOCK_SIZE = 1024 * 1024;
+export const WINDOW_BYTES = 8 * BLOCK_SIZE;
 export const CHUNK_SIZE = 64 * 1024;
 export const MEMORY_LIMIT = 128 * 1024 * 1024;
 export interface Metadata {
@@ -32,6 +33,8 @@ export interface Sink {
   write(data: ArrayBuffer): Promise<void>;
   close(): Promise<void>;
   abort(): Promise<void>;
+  getFile?(): Promise<Blob>;
+  release?(): Promise<void>;
 }
 export interface Transport {
   readonly open: boolean;
@@ -59,7 +62,7 @@ interface Outgoing {
 interface Events {
   offer: (meta: Metadata) => Promise<{ sink?: Sink } | null>;
   progress: (p: Progress) => void;
-  download: (meta: Metadata, blob: Blob) => void;
+  download: (meta: Metadata, blob: Blob, release?: () => Promise<void>) => void;
   error: (message: string) => void;
 }
 interface Waiter {
@@ -90,11 +93,19 @@ export async function digest(buffer: ArrayBuffer): Promise<string> {
     (n) => n.toString(16).padStart(2, "0"),
   ).join("");
 }
-/** Ordered, reliable RTC channel + acknowledged 1 MiB blocks. Only verified blocks advance the resume offset. */
+interface AckWindow {
+  id: string;
+  sent: number;
+  confirmed: number;
+  error?: Error;
+  wake?: () => void;
+}
+/** Reliable ordered frames, bounded pipelining, and cumulative verified / written acknowledgements. */
 export class TransferEngine {
   private incoming?: Incoming;
   private outgoing?: Outgoing;
   private waiter?: Waiter;
+  private acknowledgements?: AckWindow;
   private chain: Promise<void> = Promise.resolve();
   private queuedBytes = 0;
   private queuedMessages = 0;
@@ -196,6 +207,7 @@ export class TransferEngine {
     const epoch = this.epoch;
     this.running = true;
     const current = () => {
+      if (this.acknowledgements?.error) throw this.acknowledgements.error;
       if (this.outgoing !== out || epoch !== this.epoch || !this.transport.open)
         throw new Error("连接已中断，可重新连接后继续");
     };
@@ -219,34 +231,60 @@ export class TransferEngine {
         throw new Error("接收端进度无效");
       out.offset = offset;
       this.report(meta, out.offset, "send", "sending");
-      while (out.offset < file.size) {
+      const advertisedWindow = Number(ready.window);
+      const windowBytes =
+        Number.isSafeInteger(advertisedWindow) && advertisedWindow >= BLOCK_SIZE
+          ? Math.min(
+              WINDOW_BYTES,
+              Math.floor(advertisedWindow / BLOCK_SIZE) * BLOCK_SIZE,
+            )
+          : BLOCK_SIZE;
+      const acks: AckWindow = { id: meta.id, sent: offset, confirmed: offset };
+      this.acknowledgements = acks;
+      const prepare = async (position: number) => {
+        try {
+          const buffer = await file
+            .slice(position, position + BLOCK_SIZE)
+            .arrayBuffer();
+          return { buffer, hash: await digest(buffer) };
+        } catch (error) {
+          return { error: error as Error };
+        }
+      };
+      let prepared = acks.sent < file.size ? prepare(acks.sent) : undefined;
+      while (acks.sent < file.size) {
         current();
-        const buffer = await file
-          .slice(out.offset, out.offset + BLOCK_SIZE)
-          .arrayBuffer();
-        const hash = await digest(buffer);
+        while (acks.sent - acks.confirmed >= windowBytes) {
+          await this.waitForAck(acks);
+          current();
+        }
+        const block = await prepared!;
         current();
+        if ("error" in block) throw block.error;
+        const position = acks.sent;
+        const next = position + block.buffer.byteLength;
+        // Read + hash one block ahead while the current block drains to the channel.
+        prepared = next < file.size ? prepare(next) : undefined;
         this.control({
           type: "block",
           id: meta.id,
-          offset: out.offset,
-          size: buffer.byteLength,
-          hash,
+          offset: position,
+          size: block.buffer.byteLength,
+          hash: block.hash,
         });
-        for (let i = 0; i < buffer.byteLength; i += CHUNK_SIZE) {
+        for (let i = 0; i < block.buffer.byteLength; i += CHUNK_SIZE) {
           await this.transport.drain();
           current();
-          this.transport.send(buffer.slice(i, i + CHUNK_SIZE));
+          this.transport.send(block.buffer.slice(i, i + CHUNK_SIZE));
         }
-        const ack = await this.wait(meta.id, "ack", () =>
-          this.control({ type: "commit", id: meta.id }),
-        );
-        current();
-        if (ack.offset !== out.offset + buffer.byteLength)
-          throw new Error("接收端确认进度不匹配");
-        out.offset = Number(ack.offset);
-        this.report(meta, out.offset, "send", "sending");
+        acks.sent = next;
+        this.control({ type: "commit", id: meta.id });
       }
+      while (acks.confirmed < file.size) {
+        await this.waitForAck(acks);
+        current();
+      }
+      this.acknowledgements = undefined;
       await this.wait(meta.id, "complete", () =>
         this.control({ type: "finish", id: meta.id }),
       );
@@ -265,14 +303,31 @@ export class TransferEngine {
       this.report(meta, out.offset, "send", "paused", message);
       return "paused";
     } finally {
+      this.acknowledgements?.wake?.();
+      this.acknowledgements = undefined;
       this.running = false;
     }
+  }
+  private waitForAck(acks: AckWindow): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        acks.error = new Error("等待接收确认超时，可继续传输");
+        wake();
+      }, 45000);
+      const wake = () => {
+        clearTimeout(timer);
+        if (acks.wake === wake) acks.wake = undefined;
+        resolve();
+      };
+      acks.wake = wake;
+      if (acks.error || !this.transport.open) wake();
+    });
   }
   receive(data: string | ArrayBuffer): Promise<void> {
     const size = typeof data === "string" ? data.length * 2 : data.byteLength;
     if (
-      this.queuedBytes + size > BLOCK_SIZE * 2 ||
-      this.queuedMessages >= 128
+      this.queuedBytes + size > WINDOW_BYTES + BLOCK_SIZE * 2 ||
+      this.queuedMessages >= Math.ceil(WINDOW_BYTES / CHUNK_SIZE) + 64
     ) {
       this.events.error("对方发送过快或未遵循传输协议，已取消接收");
       this.disconnected();
@@ -283,20 +338,24 @@ export class TransferEngine {
     ++this.queuedMessages;
     const epoch = this.epoch;
     this.chain = this.chain
-      .then(async () => {
+      .then(() => {
         if (epoch !== this.epoch) return;
         if (typeof data === "string") {
           if (data.length > 4096) throw new Error("控制消息过大");
           const message: unknown = JSON.parse(data);
           if (!isRecord(message) || typeof message.type !== "string")
             throw new Error("无效传输消息");
-          await this.handle(message);
-        } else await this.binary(data);
+          return this.handle(message);
+        } else this.binary(data);
       })
       .catch(async (error) => {
         this.events.error((error as Error).message);
         if (this.incoming)
           await this.dropIncoming("error", (error as Error).message);
+        if (this.acknowledgements) {
+          this.acknowledgements.error = error as Error;
+          this.acknowledgements.wake?.();
+        }
         if (this.waiter) {
           this.waiter.reject(error as Error);
           this.waiter = undefined;
@@ -309,6 +368,32 @@ export class TransferEngine {
     return this.chain;
   }
   private async handle(m: Record<string, unknown>): Promise<void> {
+    const acks = this.acknowledgements;
+    if (acks && m.id === acks.id && m.type === "ack") {
+      const offset = Number(m.offset);
+      if (
+        !Number.isSafeInteger(offset) ||
+        offset < acks.confirmed ||
+        offset > acks.sent ||
+        (offset !== this.outgoing?.file.size && offset % BLOCK_SIZE !== 0)
+      ) {
+        acks.error = new Error("接收端确认进度无效");
+      } else {
+        acks.confirmed = offset;
+        if (this.outgoing) {
+          this.outgoing.offset = offset;
+          this.report(this.outgoing.meta, offset, "send", "sending");
+        }
+      }
+      acks.wake?.();
+      return;
+    }
+    if (acks && m.id === acks.id && m.type === "reject") {
+      acks.error = new Error(`拒绝：${String(m.reason ?? "对方已取消")}`);
+      acks.wake?.();
+      return;
+    }
+
     if (
       this.waiter &&
       m.id === this.waiter.id &&
@@ -332,7 +417,12 @@ export class TransferEngine {
           done.modified !== meta.modified
         )
           throw new Error("文件会话不匹配");
-        this.respond({ type: "ready", id: meta.id, offset: meta.size });
+        this.respond({
+          type: "ready",
+          id: meta.id,
+          offset: meta.size,
+          window: WINDOW_BYTES,
+        });
         return;
       }
       if (this.incoming?.meta.id === meta.id) {
@@ -344,7 +434,12 @@ export class TransferEngine {
         )
           throw new Error("续传文件不匹配");
         old.block = undefined;
-        this.respond({ type: "ready", id: meta.id, offset: old.offset });
+        this.respond({
+          type: "ready",
+          id: meta.id,
+          offset: old.offset,
+          window: WINDOW_BYTES,
+        });
         this.report(meta, old.offset, "receive", "receiving");
         return;
       }
@@ -371,12 +466,17 @@ export class TransferEngine {
       if (!decision.sink && meta.size > MEMORY_LIMIT) {
         await this.dropIncoming(
           "rejected",
-          "文件超过浏览器内存模式的 128 MB 上限，请使用桌面 Chrome / Edge 直接保存",
+          "本地文件存储不可用，无法安全地以内存模式接收该文件；请检查浏览器存储权限或可用空间",
         );
         return;
       }
       incoming.sink = decision.sink;
-      this.respond({ type: "ready", id: meta.id, offset: 0 });
+      this.respond({
+        type: "ready",
+        id: meta.id,
+        offset: 0,
+        window: WINDOW_BYTES,
+      });
       this.report(meta, 0, "receive", "receiving");
       return;
     }
@@ -454,8 +554,19 @@ export class TransferEngine {
     } else if (m.type === "finish") {
       if (incoming.block || incoming.offset !== incoming.meta.size)
         throw new Error("文件长度不匹配");
-      if (incoming.sink) await incoming.sink.close();
-      else
+      if (incoming.sink) {
+        await incoming.sink.close();
+        if (incoming.sink.getFile) {
+          const file = await incoming.sink.getFile();
+          if (file.size !== incoming.meta.size)
+            throw new Error("本地接收文件长度不匹配，请检查存储空间后重试");
+          this.events.download(
+            incoming.meta,
+            file,
+            incoming.sink.release?.bind(incoming.sink),
+          );
+        }
+      } else
         this.events.download(
           incoming.meta,
           new Blob(incoming.parts, { type: "application/octet-stream" }),
@@ -482,6 +593,7 @@ export class TransferEngine {
   }
   disconnected(): void {
     ++this.epoch;
+    this.acknowledgements?.wake?.();
     this.waiter?.reject(new Error("连接已断开，可重新连接后继续"));
     this.waiter = undefined;
     if (this.incoming) {
@@ -516,6 +628,7 @@ export class TransferEngine {
     const out = this.outgoing;
     if (!out) return;
     this.outgoing = undefined;
+    this.acknowledgements?.wake?.();
     this.waiter?.reject(new Error(detail));
     this.waiter = undefined;
     this.report(out.meta, out.offset, "send", "cancelled", detail);

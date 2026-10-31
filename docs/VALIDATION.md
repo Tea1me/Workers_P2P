@@ -1,13 +1,13 @@
-# Validation record — NearDrop 1.2
+# Validation record — NearDrop 1.3
 
-Checked on 2026-10-29 with Node.js 24, the committed lockfile, and Wrangler 4.155.0.
+Updated on 2026-10-31. Use the committed Node.js 24 lockfile.
 
-- Strict client and Worker TypeScript checks.
-- 31 unit / state-machine tests: receive flow, transfer integrity / resume, session isolation, candidate buffering, and bounded ICE restart.
-- 9 workerd / Durable Object integration tests: numeric allocation, atomic collision handling, readable missing / full rooms, per-IP limits, stale-session filtering, and ready-state preservation.
-- One real libwebrtc integration test: production Connection and TransferEngine clients exchange actual ICE / SDP through the production Worker, establish DTLS / SCTP data channels, transfer a multi-block file with matching SHA-256, reconnect one side, and send a file in the reverse direction.
-- Vite production build and Wrangler deployment dry run.
+Checks cover strict client / Worker TypeScript, unit / state-machine tests, workerd / Durable Objects, Vite production packaging, and a Wrangler deployment dry run.
 
-The restricted local executor does not expose usable native ICE candidates, so the real libwebrtc test skips there with an explicit reason. In GitHub CI this test is mandatory: missing native ICE candidates cause a failure, not a skip. The real test disables external STUN only for loopback determinism; the production client uses Cloudflare's public STUN endpoint. It tests actual network transport and production signaling, but is not a physical phone / desktop browser compatibility test, a public STUN reachability test, or a LAN throughput benchmark.
+New transfer tests hold acknowledgements to verify that multiple blocks are sent before the first ACK, that the sender stops at the negotiated window, and that old receivers without an advertised window retain one-block flow control. Integrity, rejection, sink failure, cancellation, lost ACKs, and verified-offset resume remain covered. A real libwebrtc test sends more than one entire window, reconnects a peer, and sends back.
 
-The older screenshot shows the main visual design. Current room codes are six digits and the main receive button is always “接收文件”. New UI / protocol is identified by NearDrop 1.2 in the footer. Physical-device acceptance remains necessary for the owner's network and browser combination.
+Browser regression runs use persistent Firefox and Chromium profiles on a local secure-context origin. They exercise the production TransferEngine, ReceiveController, and OPFS sink to receive 256 MiB + 321 bytes without a native save picker. The actual browser download is checked for exact size and full SHA-256. A second test disables createWritable in the page to exercise the dedicated-worker sync-access fallback. Test fixtures are built separately into ignored output and are never shipped as application assets.
+
+The restricted executor cannot produce usable native ICE candidates; that native-RTC test skips locally with an explicit reason, but missing candidates fail CI. Browser execution and native RTC verification are performed by repository CI. Browser tests simulate the RTC transport to isolate storage compatibility; they are not a Firefox-to-Chromium network benchmark. The real libwebrtc test covers the network protocol separately.
+
+There is no physical gigabit-LAN throughput measurement here and no promise of line-rate performance. Browser storage space / quota and actual hardware remain relevant. Main visual screenshot predates these functional changes; footer now identifies NearDrop 1.3.

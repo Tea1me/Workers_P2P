@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   BLOCK_SIZE,
+  WINDOW_BYTES,
   TransferEngine,
   type Metadata,
   type Progress,
@@ -287,7 +288,7 @@ test("memory-only receivers reject oversized files before allocating their conte
   );
   assert.equal(h.b.busy, false);
   assert.equal(h.downloads.length, 0);
-  assert.match(h.progresses.at(-1)!.detail!, /128 MB/);
+  assert.match(h.progresses.at(-1)!.detail!, /本地文件存储不可用/);
 });
 test("simultaneous sends reject cleanly instead of deadlocking", async () => {
   const h = harness();
@@ -302,9 +303,110 @@ test("simultaneous sends reject cleanly instead of deadlocking", async () => {
 test("unsolicited burst input is bounded and does not leave the receiver busy", async () => {
   const h = harness();
   await Promise.all(
-    Array.from({ length: 140 }, () => h.b.receive(new ArrayBuffer(64 * 1024))),
+    Array.from({ length: 240 }, () => h.b.receive(new ArrayBuffer(64 * 1024))),
   );
   assert.equal(h.b.busy, false);
   assert.equal(h.downloads.length, 0);
   assert.ok(h.errors.some((error) => /过快/.test(error)));
+});
+
+test("a slow acknowledgement does not stop subsequent blocks; the window remains bounded", async () => {
+  const held: string[] = [];
+  let blocks = 0;
+  let hold = true;
+  const h = harness({
+    intercept(from, data) {
+      if (typeof data === "string") {
+        const m = JSON.parse(data);
+        if (from === "a" && m.type === "block") blocks++;
+        if (from === "b" && m.type === "ack" && hold) {
+          held.push(data);
+          return null;
+        }
+      }
+      return data;
+    },
+  });
+  const pending = h.a.send(file(WINDOW_BYTES + BLOCK_SIZE));
+  const deadline = Date.now() + 10000;
+  while (held.length < WINDOW_BYTES / BLOCK_SIZE) {
+    if (Date.now() > deadline) assert.fail("window did not fill");
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.equal(blocks, WINDOW_BYTES / BLOCK_SIZE);
+  hold = false;
+  for (const ack of held) await h.a.receive(ack);
+  assert.equal(await pending, "completed");
+  assert.equal(blocks, WINDOW_BYTES / BLOCK_SIZE + 1);
+  assert.deepEqual(h.errors, []);
+});
+test("old receivers without a window advertisement still use one-block flow control", async () => {
+  const held: string[] = [];
+  let blocks = 0;
+  let hold = true;
+  const h = harness({
+    intercept(from, data) {
+      if (typeof data === "string") {
+        const m = JSON.parse(data);
+        if (from === "b" && m.type === "ready") {
+          delete m.window;
+          return JSON.stringify(m);
+        }
+        if (from === "a" && m.type === "block") blocks++;
+        if (from === "b" && m.type === "ack" && hold) {
+          held.push(data);
+          return null;
+        }
+      }
+      return data;
+    },
+  });
+  const pending = h.a.send(file(BLOCK_SIZE * 2));
+  while (!held.length) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(blocks, 1);
+  hold = false;
+  await h.a.receive(held[0]);
+  assert.equal(await pending, "completed");
+});
+test("disk-backed completed files retain a release function and do not build an in-memory blob", async () => {
+  let released = false;
+  let output: Blob | undefined;
+  let cleanup: (() => Promise<void>) | undefined;
+  const source = file(0);
+  const transport: Transport = { open: true, send() {}, async drain() {} };
+  const receiver = new TransferEngine(transport, {
+    offer: async () => ({
+      sink: {
+        async write() {},
+        async close() {},
+        async abort() {},
+        async getFile() {
+          return source;
+        },
+        async release() {
+          released = true;
+        },
+      },
+    }),
+    progress() {},
+    error(message) {
+      assert.fail(message);
+    },
+    download(_meta, blob, release) {
+      output = blob;
+      cleanup = release;
+    },
+  });
+  const id = crypto.randomUUID();
+  await receiver.receive(
+    JSON.stringify({
+      type: "offer",
+      meta: { id, name: "empty.bin", size: 0, mime: "", modified: 0 },
+    }),
+  );
+  await receiver.receive(JSON.stringify({ type: "finish", id }));
+  assert.equal(output, source);
+  assert.ok(cleanup);
+  await cleanup();
+  assert.equal(released, true);
 });

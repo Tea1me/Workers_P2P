@@ -176,7 +176,7 @@ test(
       a.connection.join(room, "Computer");
       b.connection.join(room, "Phone");
       await waitFor(() => a.connection.open && b.connection.open);
-      const payload = new Uint8Array(2 * 1024 * 1024 + 777);
+      const payload = new Uint8Array(12 * 1024 * 1024 + 777);
       for (let i = 0; i < payload.length; i++) payload[i] = i % 251;
       const file = new File([payload], "sample.bin", { lastModified: 42 });
       assert.equal(await a.engine.send(file), "completed");

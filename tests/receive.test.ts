@@ -82,7 +82,7 @@ test("pending optional picker cannot trap ordinary reception", async () => {
   const h = harness({ picker: () => new Promise(() => {}) });
   void h.controller.alternate();
   assert.equal(h.view.disabled, true);
-  assert.match(h.view.alternateLabel, /普通下载/);
+  assert.match(h.view.alternateLabel, /自动接收/);
   await h.controller.alternate();
   assert.deepEqual(h.accepted, [{}]);
 });
@@ -160,7 +160,7 @@ test("large file label is still receive, with supported disk streaming and a bou
   assert.equal(h.accepted[0].sink, sink);
   const unsupported = harness({ size: MEMORY_LIMIT + 1 });
   assert.equal(unsupported.view.disabled, true);
-  assert.match(unsupported.view.hint, /128 MiB/);
+  assert.match(unsupported.view.hint, /本地文件存储不可用/);
 });
 test("large file permission failures remain visible and retryable", async () => {
   const h = harness({
@@ -175,4 +175,51 @@ test("large file permission failures remain visible and retryable", async () => 
   assert.equal(h.view.disabled, false);
   assert.equal(h.view.error, true);
   assert.match(h.view.hint, /存储权限/);
+});
+
+test("Firefox-style large receive uses temporary disk storage without a save picker", async () => {
+  let view!: ReceiveView;
+  let accepted: { sink?: Sink } | undefined;
+  const controller = new ReceiveController(
+    { name: "large.bin", size: MEMORY_LIMIT * 4 },
+    undefined,
+    {
+      render(value) {
+        view = value;
+      },
+      accept(result) {
+        accepted = result;
+      },
+    },
+    async () => sink,
+  );
+  assert.equal(view.disabled, false);
+  assert.equal(view.label, "接收文件");
+  await controller.accept();
+  assert.equal(accepted?.sink, sink);
+});
+test("unavailable temporary storage reports a real storage error and permits retry", async () => {
+  let view!: ReceiveView;
+  let attempts = 0;
+  const controller = new ReceiveController(
+    { name: "large.bin", size: MEMORY_LIMIT * 4 },
+    undefined,
+    {
+      render(value) {
+        view = value;
+      },
+      accept() {},
+    },
+    async () => {
+      if (++attempts === 1)
+        throw new DOMException("full", "QuotaExceededError");
+      return sink;
+    },
+  );
+  await controller.accept();
+  assert.equal(view.disabled, false);
+  assert.equal(view.error, true);
+  assert.match(view.hint, /磁盘空间/);
+  await controller.accept();
+  assert.equal(attempts, 2);
 });

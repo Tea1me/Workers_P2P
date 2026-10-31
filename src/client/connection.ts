@@ -345,8 +345,10 @@ export class Connection {
         64 * 1024,
         this.pc?.sctp?.maxMessageSize || 64 * 1024,
       );
-      for (let offset = 0; offset < data.byteLength; offset += limit)
-        this.channel!.send(data.slice(offset, offset + limit));
+      if (data.byteLength <= limit) this.channel!.send(data);
+      else
+        for (let offset = 0; offset < data.byteLength; offset += limit)
+          this.channel!.send(data.slice(offset, offset + limit));
     }
   }
   async drain(): Promise<void> {

@@ -210,7 +210,7 @@
       </main>
       <footer>
         <span
-          ><span class="tiny-brand" data-icon="layers"></span>NearDrop 1.2
+          ><span class="tiny-brand" data-icon="layers"></span>NearDrop 1.3
           <span class="footer-divider">/</span> 为近距离分享而生</span
         ><span
           >Built on Cloudflare Workers <span class="footer-dot">·</span> Powered
@@ -281,9 +281,8 @@
           </li>
         </ol>
         <div class="help-note">
-          支持文件保存接口的浏览器可直接写入磁盘。普通接收支持 128 MiB
-          以内的文件默认使用下载模式；其他内存接收同样限 128
-          MiB。续传仅在双方页面未刷新且原文件仍可用时有效。本站不提供离线配对或公网中继。
+          大文件自动分块写入浏览器本地临时文件，完成后点击「保存文件」。Firefox
+          也可接收大文件，不需要系统保存选择器；实际大小取决于磁盘空间和站点存储配额。请先保存文件再清空记录。续传要求双方保持页面打开。
         </div>
         <button class="button primary full">明白了，开始分享</button>
       </form>
